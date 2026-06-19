@@ -5,7 +5,7 @@ metadata:
   namespace: fluidic-testnet
 spec:
   serviceName: mesh-node
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: mesh-node
@@ -99,3 +99,17 @@ spec:
       port: 8080
       targetPort: 8080
   type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh-node-gossip
+  namespace: fluidic-testnet
+spec:
+  selector:
+    app: mesh-node
+  ports:
+    - name: gossip
+      port: 7000
+      targetPort: 7000
+  type: LoadBalancer
