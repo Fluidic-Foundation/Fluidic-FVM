@@ -11,10 +11,72 @@ A Rust/Tokio reference implementation of the amended Fluidic architecture:
 - **Metabolic decay engine** for continuous time-based value burn.
 - **TCP gossip mesh** for local sandboxed oscillator networks.
 
-> **Status:** Functional research implementation. The core state engine, HTTP/WebSocket
-> API, Ed25519-signed stateful shifts, and React dApp are real and run against a live
-> local `mesh_node`. It is still not production financial infrastructure: no Sybil
-> resistance, slashing, persistence layer, or formal safety proof is provided.
+> **Status:** Permissionless testnet implementation. Anyone can run a `mesh_node`
+> from source or a published container image. The core state engine, HTTP/WebSocket
+> API, Ed25519-signed stateful shifts, React dApp, and TypeScript SDK are real.
+
+## Run a node in one command
+
+### Docker (recommended)
+
+```bash
+docker run -d --name fluidic-node \
+  -p 8080:8080 -p 7000:7000 \
+  -e OSCILLATOR_ID=my-node \
+  -e PEERS="seed1.testnet.fluidic.foundation:7000,seed2.testnet.fluidic.foundation:7000" \
+  ghcr.io/kolacjechutny/fluidic:latest
+```
+
+Or with Docker Compose:
+
+```bash
+wget https://raw.githubusercontent.com/Kolacjechutny/fluidic/main/docker-compose.yml
+docker compose up -d
+```
+
+### One-liner installer (source)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Kolacjechutny/fluidic/main/scripts/run-node.sh | bash
+```
+
+The installer tries Docker first; if the image is unavailable it installs Rust,
+clones the repo, builds the release binary, and starts the node.
+
+### Manual build
+
+```bash
+git clone https://github.com/Kolacjechutny/fluidic.git
+cd fluidic
+cargo build --release --bin mesh_node
+OSCILLATOR_ID=my-node API_PORT=8080 BIND_ADDR=0.0.0.0:7000 \
+  PEERS="seed1.testnet.fluidic.foundation:7000" \
+  ./target/release/mesh_node
+```
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OSCILLATOR_ID` | `0` | Unique node identity (number or pod-name suffix) |
+| `API_PORT` | `8080` | HTTP/WebSocket API port |
+| `BIND_ADDR` | `0.0.0.0:7000` | TCP gossip bind address |
+| `PEERS` | `''` | Comma-separated list of gossip peers to dial |
+| `SYNTHESIS_INTERVAL_MS` | `1000` | How often a synthesis tick runs |
+
+### What happens when it starts
+
+1. A deterministic Ed25519 keypair is derived from `OSCILLATOR_ID`.
+2. The node seeds a genesis balance for its own operator account.
+3. It locks that balance as stake, so the node is immediately eligible to
+   produce BFT synthesis certificates.
+4. It opens the API server and joins the gossip mesh via `PEERS`.
+5. Every `SYNTHESIS_INTERVAL_MS` it runs a synthesis tick: burns metabolic
+   value, finalizes stateful/commutative/EVM shifts, signs a certificate, and
+   gossips it to peers.
+
+Your node is online when you see `API server listening on 0.0.0.0:8080`.
+Point a browser or the SDK at `http://localhost:8080`.
 
 ## Architecture
 
