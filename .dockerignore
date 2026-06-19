@@ -1,0 +1,14 @@
+.git
+.github
+*.md
+docs
+target
+landing/node_modules
+landing/dist
+landing/.next
+dapp/node_modules
+dapp/dist
+testnet/faucet/node_modules
+testnet/terraform/.terraform
+testnet/terraform/*.tfstate*
+.cache

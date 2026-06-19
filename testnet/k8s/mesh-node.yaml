@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mesh-node
+  namespace: fluidic-testnet
+spec:
+  serviceName: mesh-node
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mesh-node
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+  template:
+    metadata:
+      labels:
+        app: mesh-node
+    spec:
+      containers:
+        - name: mesh-node
+          image: us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node:latest
+          imagePullPolicy: Always
+          ports:
+            - name: gossip
+              containerPort: 7000
+            - name: api
+              containerPort: 8080
+          env:
+            - name: OSCILLATOR_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BIND_ADDR
+              value: "0.0.0.0:7000"
+            - name: API_PORT
+              value: "8080"
+            - name: SYNTHESIS_INTERVAL_MS
+              value: "1000"
+            - name: PEERS
+              value: "mesh-node-0.mesh-node:7000,mesh-node-1.mesh-node:7000,mesh-node-2.mesh-node:7000"
+            - name: FLUIDIC_DATA_DIR
+              value: "/data"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh-node
+  namespace: fluidic-testnet
+spec:
+  selector:
+    app: mesh-node
+  ports:
+    - name: gossip
+      port: 7000
+      targetPort: 7000
+    - name: api
+      port: 8080
+      targetPort: 8080
+  clusterIP: None
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh-node-api
+  namespace: fluidic-testnet
+spec:
+  selector:
+    app: mesh-node
+  ports:
+    - name: api
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

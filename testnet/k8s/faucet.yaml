@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: faucet
+  namespace: fluidic-testnet
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: faucet
+  template:
+    metadata:
+      labels:
+        app: faucet
+    spec:
+      containers:
+        - name: faucet
+          image: us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/faucet:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_API_URL
+              value: "http://mesh-node:8080"
+            - name: PORT
+              value: "3000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: faucet
+  namespace: fluidic-testnet
+spec:
+  selector:
+    app: faucet
+  ports:
+    - port: 3000
+      targetPort: 3000

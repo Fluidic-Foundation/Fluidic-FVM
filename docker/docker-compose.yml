@@ -1,0 +1,71 @@
+version: "3.8"
+
+x-osc-base: &osc-base
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  environment:
+    SYNTHESIS_INTERVAL_MS: "1000"
+  networks:
+    - fluidic-mesh
+
+services:
+  osc-0:
+    <<: *osc-base
+    container_name: fluidic-osc-0
+    environment:
+      OSCILLATOR_ID: "0"
+      BIND_ADDR: "0.0.0.0:7000"
+      PEERS: "fluidic-osc-1:7000,fluidic-osc-2:7000,fluidic-osc-3:7000,fluidic-osc-4:7000,fluidic-osc-5:7000"
+      SYNTHESIS_INTERVAL_MS: "1000"
+    ports:
+      - "7000:7000"
+
+  osc-1:
+    <<: *osc-base
+    container_name: fluidic-osc-1
+    environment:
+      OSCILLATOR_ID: "1"
+      BIND_ADDR: "0.0.0.0:7000"
+      PEERS: "fluidic-osc-0:7000,fluidic-osc-2:7000,fluidic-osc-3:7000,fluidic-osc-4:7000,fluidic-osc-5:7000"
+      SYNTHESIS_INTERVAL_MS: "1000"
+
+  osc-2:
+    <<: *osc-base
+    container_name: fluidic-osc-2
+    environment:
+      OSCILLATOR_ID: "2"
+      BIND_ADDR: "0.0.0.0:7000"
+      PEERS: "fluidic-osc-0:7000,fluidic-osc-1:7000,fluidic-osc-3:7000,fluidic-osc-4:7000,fluidic-osc-5:7000"
+      SYNTHESIS_INTERVAL_MS: "1000"
+
+  osc-3:
+    <<: *osc-base
+    container_name: fluidic-osc-3
+    environment:
+      OSCILLATOR_ID: "3"
+      BIND_ADDR: "0.0.0.0:7000"
+      PEERS: "fluidic-osc-0:7000,fluidic-osc-1:7000,fluidic-osc-2:7000,fluidic-osc-4:7000,fluidic-osc-5:7000"
+      SYNTHESIS_INTERVAL_MS: "1000"
+
+  osc-4:
+    <<: *osc-base
+    container_name: fluidic-osc-4
+    environment:
+      OSCILLATOR_ID: "4"
+      BIND_ADDR: "0.0.0.0:7000"
+      PEERS: "fluidic-osc-0:7000,fluidic-osc-1:7000,fluidic-osc-2:7000,fluidic-osc-3:7000,fluidic-osc-5:7000"
+      SYNTHESIS_INTERVAL_MS: "1000"
+
+  osc-5:
+    <<: *osc-base
+    container_name: fluidic-osc-5
+    environment:
+      OSCILLATOR_ID: "5"
+      BIND_ADDR: "0.0.0.0:7000"
+      PEERS: "fluidic-osc-0:7000,fluidic-osc-1:7000,fluidic-osc-2:7000,fluidic-osc-3:7000,fluidic-osc-4:7000"
+      SYNTHESIS_INTERVAL_MS: "1000"
+
+networks:
+  fluidic-mesh:
+    driver: bridge
