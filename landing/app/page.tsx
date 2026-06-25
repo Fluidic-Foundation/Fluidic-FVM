@@ -46,19 +46,19 @@ export default function FluidicPage() {
               <DropdownCta
                 title="Get started"
                 desc="Learn how Fluidic replaces blocks with a continuous wave-field and how anyone can run a node."
-                href="/docs"
+                href="/docs/"
               />
               <DropdownGrid>
                 <DropdownSection title="For users">
-                  <DropdownItem icon={BookOpen} href="/docs#what-is-fluidic" title="What is Fluidic?" desc="The blockless execution model in plain terms." />
-                  <DropdownItem icon={Wallet} href="/docs#accounts" title="Accounts & keys" desc="Ed25519 identities and derived token accounts." />
-                  <DropdownItem icon={Cpu} href="/docs#run-a-node" title="Run a node" desc="One command to join the testnet mesh." />
-                  <DropdownItem icon={Shield} href="/docs#staking" title="Stake & earn" desc="Lock WAVE and earn synthesis rewards." />
+                  <DropdownItem icon={BookOpen} href="/docs/getting-started/what-is-fluidic" title="What is Fluidic?" desc="The blockless execution model in plain terms." />
+                  <DropdownItem icon={Wallet} href="/docs/core-concepts/accounts" title="Accounts & keys" desc="Ed25519 identities and derived token accounts." />
+                  <DropdownItem icon={Cpu} href="/docs/core-concepts/synthesis-ticks" title="Run a node" desc="One command to join the testnet mesh." />
+                  <DropdownItem icon={Shield} href="/docs/core-concepts/consensus-staking" title="Stake & earn" desc="Lock WAVE and earn synthesis rewards." />
                 </DropdownSection>
                 <DropdownSection title="Learn">
-                  <DropdownItem icon={Zap} href="/docs#tokenomics" title="Tokenomics" desc="Metabolic burn, rewards, and issuance." />
-                  <DropdownItem icon={Globe} href="/docs#testnet" title="Testnet" desc="Live seed, API endpoints, and status." />
-                  <DropdownItem icon={Box} href="/docs#faq" title="FAQ" desc="Common questions answered." />
+                  <DropdownItem icon={Zap} href="/docs/core-concepts/consensus-staking" title="Tokenomics" desc="Metabolic burn, rewards, and issuance." />
+                  <DropdownItem icon={Globe} href="/docs/getting-started/testnet" title="Testnet" desc="Live seed, API endpoints, and status." />
+                  <DropdownItem icon={Box} href="/docs/" title="FAQ" desc="Common questions answered." />
                 </DropdownSection>
               </DropdownGrid>
             </NavDropdown>
@@ -67,18 +67,18 @@ export default function FluidicPage() {
               <DropdownCta
                 title="Developer docs"
                 desc="Everything you need to build dApps, nodes, and bridges on Fluidic."
-                href="/docs"
+                href="/docs/"
               />
               <DropdownGrid>
                 <DropdownSection title="Start building">
-                  <DropdownItem icon={Terminal} href="/docs#quickstart" title="Quickstart" desc="Install the SDK and submit your first shift." />
-                  <DropdownItem icon={Layers} href="/docs#architecture" title="Architecture" desc="NTT, vector-clock DAG, and synthesis." />
-                  <DropdownItem icon={Cpu} href="/docs#sdk" title="SDK reference" desc="TypeScript client, keys, and swaps." />
+                  <DropdownItem icon={Terminal} href="/docs/getting-started/quickstart" title="Quickstart" desc="Install the SDK and submit your first shift." />
+                  <DropdownItem icon={Layers} href="/docs/core-concepts/shifts" title="Architecture" desc="NTT, vector-clock DAG, and synthesis." />
+                  <DropdownItem icon={Cpu} href="/docs/api-reference/typescript-sdk" title="SDK reference" desc="TypeScript client, keys, and swaps." />
                 </DropdownSection>
                 <DropdownSection title="References">
                   <DropdownItem icon={AppWindow} href="/dapp" title="Reference dApp" desc="Live example: wallet, faucet, and swap." />
-                  <DropdownItem icon={Radio} href="/docs#api" title="API reference" desc="REST and WebSocket endpoints." />
-                  <DropdownItem icon={Blocks} href="/docs#evm" title="EVM bridge" desc="Execute raw Ethereum transactions." />
+                  <DropdownItem icon={Radio} href="/docs/api-reference/rest-api" title="API reference" desc="REST and WebSocket endpoints." />
+                  <DropdownItem icon={Blocks} href="/docs/core-concepts/evm-compatibility" title="EVM bridge" desc="Execute raw Ethereum transactions." />
                   <DropdownItem icon={Terminal} href="https://github.com/Fluidic-Foundation/Fluidic-FVM" title="GitHub" desc="Open-source node runtime." />
                 </DropdownSection>
               </DropdownGrid>
@@ -93,13 +93,13 @@ export default function FluidicPage() {
               <DropdownGrid>
                 <DropdownSection title="Explore">
                   <DropdownItem icon={Globe} href="/explorer" title="Explorer" desc="Search shifts, ticks, and validators." />
-                  <DropdownItem icon={Network} href="/docs#testnet" title="Testnet info" desc="Seed peer, RPC, and faucet." />
-                  <DropdownItem icon={Shield} href="/docs#validators" title="Validators" desc="Staking, quorum, and certificates." />
+                  <DropdownItem icon={Network} href="/docs/getting-started/testnet" title="Testnet info" desc="Seed peer, RPC, and faucet." />
+                  <DropdownItem icon={Shield} href="/docs/core-concepts/consensus-staking" title="Validators" desc="Staking, quorum, and certificates." />
                 </DropdownSection>
                 <DropdownSection title="Participate">
-                  <DropdownItem icon={Cpu} href="/docs#run-a-node" title="Synthesis nodes" desc="Run a node and produce certificates." />
-                  <DropdownItem icon={Blocks} href="/docs#synthesis" title="Blocks / ticks" desc="How synthesis ticks become certificates." />
-                  <DropdownItem icon={Zap} href="/docs#quorum" title="Quorum" desc="BFT finalization mechanics." />
+                  <DropdownItem icon={Cpu} href="/docs/core-concepts/synthesis-ticks" title="Synthesis nodes" desc="Run a node and produce certificates." />
+                  <DropdownItem icon={Blocks} href="/docs/core-concepts/synthesis-ticks" title="Blocks / ticks" desc="How synthesis ticks become certificates." />
+                  <DropdownItem icon={Zap} href="/docs/core-concepts/consensus-staking" title="Quorum" desc="BFT finalization mechanics." />
                 </DropdownSection>
               </DropdownGrid>
             </NavDropdown>
@@ -113,8 +113,8 @@ export default function FluidicPage() {
                 </DropdownSection>
                 <DropdownSection title="Community">
                   <DropdownItem icon={Globe} href="/explorer" title="Testnet explorer" desc="Watch the mesh live." />
-                  <DropdownItem icon={BookOpen} href="/docs" title="Documentation" desc="User and developer guides." />
-                  <DropdownItem icon={Zap} href="/docs#whitepaper" title="Whitepaper" desc="Protocol specification and design." />
+                  <DropdownItem icon={BookOpen} href="/docs/" title="Documentation" desc="User and developer guides." />
+                  <DropdownItem icon={Zap} href="/whitepaper.pdf" title="Whitepaper" desc="Protocol specification and design." />
                 </DropdownSection>
               </DropdownGrid>
             </NavDropdown>
@@ -145,10 +145,10 @@ export default function FluidicPage() {
               </button>
             </div>
             <div className="mobile-menu-links">
-              <Link href="/docs" onClick={() => setMobileOpen(false)}>Use Fluidic</Link>
-              <Link href="/docs" onClick={() => setMobileOpen(false)}>Build</Link>
+              <Link href="/docs/" onClick={() => setMobileOpen(false)}>Use Fluidic</Link>
+              <Link href="/docs/" onClick={() => setMobileOpen(false)}>Build</Link>
               <Link href="/explorer" onClick={() => setMobileOpen(false)}>Network</Link>
-              <Link href="/docs" onClick={() => setMobileOpen(false)}>Ecosystem</Link>
+              <Link href="/docs/" onClick={() => setMobileOpen(false)}>Ecosystem</Link>
               <Link href="/explorer" onClick={() => setMobileOpen(false)}>Explorer</Link>
             </div>
           </div>
@@ -425,7 +425,7 @@ console.log(poolInHash);`}
               <p className="node-desc" style={{ margin: 0, maxWidth: '70%' }}>
                 Register an account, sign a swap, and watch it synthesize in the explorer.
               </p>
-              <Link href="/docs" className="docs-btn">
+              <Link href="/docs/" className="docs-btn">
                 READ DOCS
                 <span className="arrow">→</span>
               </Link>
@@ -501,10 +501,10 @@ console.log(poolInHash);`}
           [WAVE_0X // SYNTH_01] © {new Date().getFullYear()} FLUIDIC FOUNDATION // NULL_DOMAIN
         </div>
         <div className="footer-links">
-          <Link href="/docs">Documentation</Link>
+          <Link href="/docs/">Documentation</Link>
           <Link href="/explorer">Explorer</Link>
           <a href="https://github.com/Fluidic-Foundation/">GitHub</a>
-          <Link href="/docs#testnet">Testnet</Link>
+          <Link href="/docs/getting-started/testnet">Testnet</Link>
           <a href="https://github.com/Fluidic-Foundation/Fluidic-FVM">Source</a>
         </div>
         <div className="footer-right text-white" style={{ display: 'flex', justifyContent: 'flex-end' }}>

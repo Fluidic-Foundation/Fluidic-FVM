@@ -519,7 +519,7 @@ export default function ExplorerPage() {
           </div>
           <div className="flex gap-5">
             <Link href="/" className="hover:text-white">Home</Link>
-            <Link href="/docs" className="hover:text-white">Docs</Link>
+            <Link href="/docs/" className="hover:text-white">Docs</Link>
             <a href="https://github.com" className="hover:text-white">GitHub</a>
           </div>
         </div>

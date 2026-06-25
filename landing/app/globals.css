@@ -1276,3 +1276,109 @@ button {
     font-size: 10px;
   }
 }
+
+/* Docs prose styles */
+.prose-docs h2 {
+  margin-top: 3rem;
+  margin-bottom: 1.25rem;
+  font-family: var(--font-header);
+  font-size: 1.875rem;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  color: var(--primary);
+}
+.prose-docs h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  font-family: var(--font-header);
+  font-size: 1.25rem;
+  font-weight: 400;
+  color: var(--white);
+}
+.prose-docs p {
+  margin-bottom: 1rem;
+  font-size: 0.9375rem;
+  line-height: 1.75;
+  color: var(--data-text);
+}
+.prose-docs strong {
+  color: var(--white);
+  font-weight: 500;
+}
+.prose-docs blockquote {
+  margin: 1.5rem 0;
+  border-left: 2px solid var(--accent);
+  padding-left: 1.25rem;
+  font-style: italic;
+  color: var(--white);
+}
+.prose-docs ul,
+.prose-docs ol {
+  margin-bottom: 1.25rem;
+  padding-left: 1.25rem;
+  color: var(--data-text);
+}
+.prose-docs li {
+  margin-bottom: 0.5rem;
+  font-size: 0.9375rem;
+  line-height: 1.7;
+}
+.prose-docs code {
+  font-family: var(--font-ui);
+  font-size: 0.8125rem;
+  background: rgba(240, 240, 240, 0.06);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  color: var(--primary);
+}
+.prose-docs pre {
+  margin: 1.25rem 0;
+  overflow-x: auto;
+  border: 1px solid rgba(240, 240, 240, 0.08);
+  background: #0a0a14;
+  padding: 1.25rem;
+  border-radius: 0.25rem;
+}
+.prose-docs pre code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  color: var(--white);
+  line-height: 1.65;
+}
+.prose-docs table {
+  width: 100%;
+  margin: 1.25rem 0;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+.prose-docs th,
+.prose-docs td {
+  border: 1px solid rgba(240, 240, 240, 0.08);
+  padding: 0.75rem 1rem;
+  text-align: left;
+}
+.prose-docs th {
+  background: rgba(112, 36, 255, 0.08);
+  color: var(--white);
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.prose-docs td {
+  color: var(--data-text);
+}
+.prose-docs a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-docs a:hover {
+  color: var(--white);
+}
+.prose-docs hr {
+  border: 0;
+  border-top: 1px solid var(--grid-line);
+  margin: 2rem 0;
+}
