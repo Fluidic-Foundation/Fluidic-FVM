@@ -6,7 +6,6 @@ import {
   Activity,
   AlertCircle,
   ArrowUpRight,
-  Blocks,
   CheckCircle2,
   ChevronDown,
   Copy,
@@ -19,15 +18,12 @@ import {
   Search,
   Shield,
   Wallet,
+  X,
   XCircle,
   Zap,
 } from "lucide-react";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_FLUIDIC_API ||
-  (typeof window !== "undefined" && window.location.protocol === "https:"
-    ? "https://api.testnet.fluidic.foundation"
-    : "http://api.testnet.fluidic.foundation");
+const API_BASE = process.env.NEXT_PUBLIC_FLUIDIC_API || "https://api.testnet.fluidic.foundation";
 const WS_BASE = API_BASE.replace(/^http/, (m) => (m === "https" ? "wss" : "ws"));
 
 interface StateResponse {
@@ -83,7 +79,7 @@ interface TickResponse extends RecentTick {}
 
 const nav = [
   { label: "Dashboard", href: "/explorer" },
-  { label: "Blocks", href: "#blocks" },
+  { label: "Ticks", href: "#ticks" },
   { label: "Transactions", href: "#txs" },
   { label: "Validators", href: "#validators" },
   { label: "Docs", href: "/docs" },
@@ -98,7 +94,8 @@ export default function ExplorerPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
-  const [searchResult, setSearchResult] = useState<{ type: "shift" | "tick"; data: any } | null>(null);
+  const [searchResult, setSearchResult] = useState<{ type: "shift" | "tick" | "account"; data: any } | null>(null);
+  const [selectedShift, setSelectedShift] = useState<RecentShift | null>(null);
 
   const totalShifts = (state?.commutative_applied || 0) + (state?.stateful_applied || 0) + (state?.evm_applied || 0);
   const latestTick = ticks[0]?.tick ?? 0;
@@ -172,6 +169,8 @@ export default function ExplorerPage() {
     return () => ws?.close();
   }, []);
 
+  const isHexAccount = (s: string) => /^[0-9a-fA-F]{64}$/.test(s);
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     const q = search.trim();
@@ -186,6 +185,20 @@ export default function ExplorerPage() {
         } else {
           setSearchResult({ type: "tick", data: null });
         }
+      } else if (isHexAccount(q)) {
+        const [balanceRes, shiftRes] = await Promise.all([
+          fetch(`${API_BASE}/api/account/${q}/balance`),
+          fetch(`${API_BASE}/api/shift/${q}/status`),
+        ]);
+        const account = balanceRes.ok ? await balanceRes.json() : null;
+        const shift = shiftRes.ok ? await shiftRes.json() : null;
+        if (account) {
+          setSearchResult({ type: "account", data: { account: q, ...account, shift } });
+        } else if (shift) {
+          setSearchResult({ type: "shift", data: shift });
+        } else {
+          setSearchResult({ type: "account", data: null });
+        }
       } else {
         const res = await fetch(`${API_BASE}/api/shift/${q}/status`);
         if (res.status === 404) {
@@ -195,7 +208,7 @@ export default function ExplorerPage() {
         }
       }
     } catch {
-      setSearchResult({ type: "shift", data: { hash: q, status: "unknown", error: "Network error", synthesis_tick: 0, confirmations: 0 } });
+      setSearchResult({ type: "shift", data: { hash: search, status: "unknown", error: "Network error", synthesis_tick: 0, confirmations: 0 } });
     }
     setSearching(false);
   };
@@ -206,7 +219,7 @@ export default function ExplorerPage() {
       <header className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#0b0e11]/95 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1500px] items-center gap-6 px-4">
           <Link href="/" className="flex items-center gap-2.5">
-            <img src="/fluidic-logo.png" alt="" className="h-7 w-7 rounded-full object-cover" />
+            <img src="/fluidic-logo-new.png" alt="" className="h-7 w-7 rounded-full object-cover" />
             <div className="flex flex-col leading-none">
               <span className="text-[15px] font-semibold text-white">Fluidic</span>
               <span className="text-[10px] tracking-wider text-slate-500">EXPLORER</span>
@@ -224,7 +237,7 @@ export default function ExplorerPage() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by shift hash, account, or block number"
+              placeholder="Search by shift hash, account, or tick number"
               className="h-10 w-full rounded-lg border border-white/[0.06] bg-[#13171c] pl-10 pr-24 text-sm text-white outline-none transition-colors placeholder:text-slate-600 focus:border-[#00d1a7]/50"
             />
             <button
@@ -261,7 +274,7 @@ export default function ExplorerPage() {
       {/* Stats strip */}
       <section className="mx-auto max-w-[1500px] px-4 py-4">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
-          <Stat label="Latest block" value={latestTick ? `#${latestTick.toLocaleString()}` : "—"} icon={Blocks} />
+          <Stat label="Latest tick" value={latestTick ? `#${latestTick.toLocaleString()}` : "—"} icon={Zap} />
           <Stat label="Finalized" value={finalizedTick ? `#${finalizedTick.toLocaleString()}` : "—"} icon={CheckCircle2} />
           <Stat label="Total shifts" value={totalShifts ? totalShifts.toLocaleString() : "—"} icon={Layers} />
           <Stat label="WAV/USDC" value={state ? `$${state.price.toFixed(6)}` : "—"} icon={Activity} />
@@ -281,27 +294,30 @@ export default function ExplorerPage() {
                 Close
               </button>
             </div>
-            {searchResult.type === "shift" ? (
-              searchResult.data ? (
-                <div className="grid gap-2 text-sm md:grid-cols-4">
-                  <KV label="Hash" value={shortHash(searchResult.data.hash)} full={searchResult.data.hash} />
-                  <KV label="Status" value={<StatusBadge status={searchResult.data.status} />} />
-                  <KV label="Tick" value={searchResult.data.synthesis_tick} />
-                  <KV label="Confirmations" value={searchResult.data.confirmations} />
-                  {searchResult.data.error && <div className="col-span-full text-red-400">{searchResult.data.error}</div>}
-                </div>
-              ) : (
-                <div className="text-sm text-slate-500">Block not found.</div>
-              )
-            ) : searchResult.data ? (
+            {searchResult.type === "shift" && searchResult.data ? (
+              <div className="grid gap-2 text-sm md:grid-cols-4">
+                <KV label="Hash" value={shortHash(searchResult.data.hash)} full={searchResult.data.hash} />
+                <KV label="Status" value={<StatusBadge status={searchResult.data.status} />} />
+                <KV label="Tick" value={searchResult.data.synthesis_tick} />
+                <KV label="Confirmations" value={searchResult.data.confirmations} />
+                {searchResult.data.error && <div className="col-span-full text-red-400">{searchResult.data.error}</div>}
+              </div>
+            ) : searchResult.type === "tick" && searchResult.data ? (
               <div className="grid gap-2 text-sm md:grid-cols-4">
                 <KV label="Tick" value={`#${searchResult.data.tick}`} />
                 <KV label="Hash" value={shortHash(searchResult.data.hash)} full={searchResult.data.hash} />
                 <KV label="Status" value={<StatusBadge status={searchResult.data.finalized ? "finalized" : "accepted"} />} />
                 <KV label="Shifts" value={searchResult.data.commutative_applied + searchResult.data.stateful_applied + searchResult.data.evm_applied} />
               </div>
+            ) : searchResult.type === "account" && searchResult.data ? (
+              <div className="grid gap-2 text-sm md:grid-cols-4">
+                <KV label="Account" value={shortHash(searchResult.data.account)} full={searchResult.data.account} />
+                <KV label="WAVE balance" value={formatAmount(searchResult.data.wave)} />
+                <KV label="USDC balance" value={formatAmount(searchResult.data.usdc)} />
+                {searchResult.data.shift && <KV label="Shift status" value={<StatusBadge status={searchResult.data.shift.status} />} />}
+              </div>
             ) : (
-              <div className="text-sm text-slate-500">Block not found.</div>
+              <div className="text-sm text-slate-500">Not found.</div>
             )}
           </div>
         </section>
@@ -344,7 +360,7 @@ export default function ExplorerPage() {
                     </tr>
                   ) : (
                     shifts.map((s, i) => (
-                      <tr key={i} className="transition-colors hover:bg-white/[0.02]">
+                      <tr key={i} className="cursor-pointer transition-colors hover:bg-white/[0.02]" onClick={() => setSelectedShift(s)}>
                         <td className="px-4 py-3 font-mono text-xs text-[#00d1a7]">
                           <div className="flex items-center gap-2">
                             <Link href={`/explorer?shift=${s.hash}`} className="hover:underline">
@@ -378,13 +394,13 @@ export default function ExplorerPage() {
           </div>
         </section>
 
-        {/* Right: blocks + validators */}
+        {/* Right: ticks + validators */}
         <aside className="space-y-4">
-          {/* Latest blocks */}
-          <div className="rounded-lg border border-white/[0.06] bg-[#11161c]" id="blocks">
+          {/* Latest ticks */}
+          <div className="rounded-lg border border-white/[0.06] bg-[#11161c]" id="ticks">
             <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3">
               <h2 className="flex items-center gap-2 text-sm font-semibold text-white">
-                <Blocks className="h-4 w-4 text-[#3b82f6]" /> Latest blocks
+                <Zap className="h-4 w-4 text-[#3b82f6]" /> Latest ticks
               </h2>
               <Link href="#" className="text-xs font-medium text-[#3b82f6] hover:underline">
                 View all
@@ -399,7 +415,7 @@ export default function ExplorerPage() {
                   </div>
                 ))
               ) : ticks.length === 0 ? (
-                <div className="px-4 py-6 text-center text-sm text-slate-500">No blocks produced yet.</div>
+                <div className="px-4 py-6 text-center text-sm text-slate-500">No ticks produced yet.</div>
               ) : (
                 ticks.map((t) => (
                   <div key={t.tick} className="flex items-center justify-between px-4 py-3 transition-colors hover:bg-white/[0.02]">
@@ -471,10 +487,34 @@ export default function ExplorerPage() {
         </aside>
       </main>
 
+      {/* Shift detail modal */}
+      {selectedShift && (
+        <div className="fixed inset-0 z-[100] flex items-start justify-center bg-black/70 p-4 pt-24 backdrop-blur-sm" onClick={() => setSelectedShift(null)}>
+          <div className="w-full max-w-2xl rounded-lg border border-white/[0.06] bg-[#11161c] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-white">Shift details</h2>
+              <button onClick={() => setSelectedShift(null)} className="text-slate-500 hover:text-white">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="grid gap-3 text-sm md:grid-cols-2">
+              <KV label="Hash" value={shortHash(selectedShift.hash)} full={selectedShift.hash} />
+              <KV label="Type" value={<TypeBadge kind={selectedShift.kind} />} />
+              <KV label="Status" value={<StatusBadge status={selectedShift.status} />} />
+              <KV label="Amount" value={selectedShift.amount ? formatAmount(selectedShift.amount) : "—"} />
+              <KV label="Domain" value={selectedShift.domain ? decodeDomain(selectedShift.domain) : "—"} full={selectedShift.domain} />
+              <KV label="From" value={selectedShift.from ? shortHash(selectedShift.from) : "—"} full={selectedShift.from} />
+              <KV label="To" value={selectedShift.to ? shortHash(selectedShift.to) : "—"} full={selectedShift.to} />
+              <KV label="Timestamp" value={selectedShift.timestamp_ns ? new Date(selectedShift.timestamp_ns / 1_000_000).toLocaleString() : "—"} />
+            </div>
+          </div>
+        </div>
+      )}
+
       <footer className="border-t border-white/[0.06] bg-[#0b0e11] py-8">
         <div className="mx-auto flex max-w-[1500px] flex-col items-center justify-between gap-3 px-4 text-xs text-slate-500 md:flex-row">
           <div className="flex items-center gap-2">
-            <img src="/fluidic-logo.png" alt="" className="h-5 w-5 rounded-full opacity-60" />
+            <img src="/fluidic-logo-new.png" alt="" className="h-5 w-5 rounded-full opacity-60" />
             <span>Fluidic Explorer · Testnet</span>
           </div>
           <div className="flex gap-5">
@@ -541,9 +581,11 @@ function TypeBadge({ kind }: { kind: string }) {
   );
 }
 
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text, onClick }: { text: string; onClick?: (e: React.MouseEvent) => void }) {
   const [copied, setCopied] = useState(false);
-  const copy = async () => {
+  const copy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onClick?.(e);
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -620,4 +662,17 @@ function timeAgo(ms: number): string {
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr}h ago`;
   return `${Math.floor(hr / 24)}d ago`;
+}
+
+function decodeDomain(raw: string): string {
+  try {
+    const bytes: number[] = [];
+    for (let i = 0; i < raw.length; i += 2) {
+      bytes.push(parseInt(raw.slice(i, i + 2), 16));
+    }
+    const text = new TextDecoder().decode(new Uint8Array(bytes));
+    return text.replace(/\0/g, "");
+  } catch {
+    return raw;
+  }
 }

@@ -23,8 +23,8 @@ A Rust/Tokio reference implementation of the amended Fluidic architecture:
 docker run -d --name fluidic-node \
   -p 8080:8080 -p 7000:7000 \
   -e OSCILLATOR_ID=my-node \
-  -e PEERS="seed1.testnet.fluidic.foundation:7000,seed2.testnet.fluidic.foundation:7000" \
-  ghcr.io/kolacjechutny/fluidic:latest
+  -e PEERS="34.56.159.76:7000" \
+  ghcr.io/Fluidic-Foundation/Fluidic-FVM:latest
 ```
 
 Or with Docker Compose:
@@ -50,7 +50,7 @@ git clone https://github.com/Kolacjechutny/fluidic.git
 cd fluidic
 cargo build --release --bin mesh_node
 OSCILLATOR_ID=my-node API_PORT=8080 BIND_ADDR=0.0.0.0:7000 \
-  PEERS="seed1.testnet.fluidic.foundation:7000" \
+  PEERS="34.56.159.76:7000" \
   ./target/release/mesh_node
 ```
 

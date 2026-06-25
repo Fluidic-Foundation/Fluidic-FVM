@@ -1,9 +1,12 @@
 /target
 **/*.rs.bk
 /node_modules
-/.next
-/dist
-/out
+**/.next
+**/dist
+**/out
+
+# Generated copies of the dApp inside the landing site
+/landing/public/dapp
 *.log
 .env
 .env.local

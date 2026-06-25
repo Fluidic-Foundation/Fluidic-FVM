@@ -9,22 +9,17 @@ spec:
   selector:
     matchLabels:
       app: mesh-node
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 10Gi
   template:
     metadata:
       labels:
         app: mesh-node
     spec:
+      volumes:
+        - name: data
+          emptyDir: {}
       containers:
         - name: mesh-node
-          image: us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node:latest
+          image: us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node@sha256:2da00f433ba763d22e3c1d01e36215fa10700009f3b6017a3fd8f50c085accb5
           imagePullPolicy: Always
           ports:
             - name: gossip
@@ -42,32 +37,51 @@ spec:
               value: "8080"
             - name: SYNTHESIS_INTERVAL_MS
               value: "1000"
+            - name: GENERATOR_INTERVAL_MS
+              value: "1000"
+            - name: SNAPSHOT_INTERVAL_MS
+              value: "5000"
             - name: PEERS
-              value: "mesh-node-0.mesh-node:7000,mesh-node-1.mesh-node:7000,mesh-node-2.mesh-node:7000"
+              value: ""
             - name: FLUIDIC_DATA_DIR
               value: "/data"
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_BACKTRACE
+              value: "1"
           volumeMounts:
             - name: data
               mountPath: /data
           resources:
             requests:
               cpu: 500m
-              memory: 512Mi
+              memory: 2Gi
             limits:
               cpu: 2000m
-              memory: 2Gi
-          livenessProbe:
+              memory: 8Gi
+          startupProbe:
             httpGet:
               path: /api/health
               port: api
             initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: api
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
           readinessProbe:
             httpGet:
               path: /api/health
               port: api
-            initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      terminationGracePeriodSeconds: 60
 ---
 apiVersion: v1
 kind: Service

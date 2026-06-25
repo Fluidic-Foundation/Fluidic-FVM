@@ -1,257 +1,190 @@
 import {
   FluidicClient as SdkClient,
   FluidicKeypair,
-  buildStatefulShift,
-  hashStatefulShift,
-  type StateSnapshot,
-  type ShiftStatusResponse,
+  submitSwap,
+  quoteSwap,
   type StateResponse,
 } from '@fluidic/sdk';
 
-const API_BASE = import.meta.env.VITE_FLUIDIC_API || 'http://localhost:8080';
+const API_BASE = import.meta.env.VITE_FLUIDIC_API || 'https://api.testnet.fluidic.foundation';
 
-export interface FluidicState {
-  wave_reserve: string;
-  usdc_reserve: string;
-  price: number;
-  throughput: number;
-  latency_ms: number;
-  metabolic_burned: string;
-  commutative_applied: number;
-  stateful_applied: number;
-  pool_wave_account: string;
-  pool_usdc_account: string;
+export interface TokenBalances {
+  wave: string;
+  usdc: string;
 }
 
-export interface AccountInfo {
-  publicKeyHex: string;
-  privateKeyHex: string;
+export interface Wallet {
+  keypair: FluidicKeypair;
   accountId: string;
   waveAccount: string;
   usdcAccount: string;
 }
 
 export interface SwapResult {
+  poolInHash: string;
+  estimatedOut: string;
+}
+
+export interface RecentShift {
+  hash: string;
+  kind: string;
   status: string;
-  hash: string;
+  domain?: string;
+  from?: string;
+  to?: string;
+  amount?: string;
+  timestamp_ns: number;
 }
 
-export interface ShiftStatus {
-  hash: string;
-  status: 'unknown' | 'accepted' | 'finalized' | 'rejected';
-  error: string | null;
-  synthesis_tick: number;
-  confirmations: number;
+const STORAGE_KEY = 'fluidic:dev-wallet';
+const VC_KEY = 'fluidic:dev-vc';
+
+function saveWallet(wallet: Wallet) {
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      privateKeyHex: wallet.keypair.secretKeyHex,
+      accountId: wallet.accountId,
+      waveAccount: wallet.waveAccount,
+      usdcAccount: wallet.usdcAccount,
+    })
+  );
 }
 
-export interface BalanceResponse {
-  wave: string;
-  usdc: string;
-}
-
-export interface FluidicClient {
-  state: FluidicState;
-  account: AccountInfo | null;
-  isConnected: boolean;
-  connect(): void;
-  disconnect(): void;
-  createAccount(): Promise<AccountInfo>;
-  getBalance(accountId: string): Promise<BalanceResponse>;
-  swap(from: 'WAVE' | 'USDC', to: 'WAVE' | 'USDC', amount: string): Promise<SwapResult>;
-  getShiftStatus(hash: string): Promise<ShiftStatus>;
-  subscribe(callback: (state: FluidicState) => void): () => void;
-}
-
-function loadOrCreateAccount(): { keypair: FluidicKeypair; info: AccountInfo } {
-  const stored = localStorage.getItem('fluidic:account');
-  if (stored) {
-    const parsed = JSON.parse(stored) as AccountInfo;
-    const keypair = FluidicKeypair.fromSecretKey(parsed.privateKeyHex);
+export function loadWallet(): Wallet | null {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const stored = JSON.parse(raw);
+    const keypair = FluidicKeypair.fromSecretKey(stored.privateKeyHex);
     return {
       keypair,
-      info: {
-        publicKeyHex: keypair.publicKeyHex,
-        privateKeyHex: keypair.secretKeyHex,
-        accountId: keypair.accountId,
-        waveAccount: keypair.waveAccount,
-        usdcAccount: keypair.usdcAccount,
-      },
+      accountId: stored.accountId || keypair.accountId,
+      waveAccount: stored.waveAccount || keypair.waveAccount,
+      usdcAccount: stored.usdcAccount || keypair.usdcAccount,
     };
+  } catch {
+    localStorage.removeItem(STORAGE_KEY);
+    return null;
   }
-  return createNewAccount();
 }
 
-function createNewAccount(): { keypair: FluidicKeypair; info: AccountInfo } {
+export function clearWallet() {
+  localStorage.removeItem(STORAGE_KEY);
+}
+
+export function createWallet(): Wallet {
   const keypair = FluidicKeypair.generate();
-  const info: AccountInfo = {
-    publicKeyHex: keypair.publicKeyHex,
-    privateKeyHex: keypair.secretKeyHex,
+  const wallet: Wallet = {
+    keypair,
     accountId: keypair.accountId,
     waveAccount: keypair.waveAccount,
     usdcAccount: keypair.usdcAccount,
   };
-  localStorage.setItem('fluidic:account', JSON.stringify(info));
-  return { keypair, info };
+  saveWallet(wallet);
+  return wallet;
 }
 
-function mapState(snap: StateSnapshot | StateResponse): FluidicState {
-  return {
-    wave_reserve: snap.wave_reserve,
-    usdc_reserve: snap.usdc_reserve,
-    price: snap.price,
-    throughput: snap.throughput,
-    latency_ms: snap.latency_ms,
-    metabolic_burned: snap.metabolic_burned,
-    commutative_applied: snap.commutative_applied,
-    stateful_applied: snap.stateful_applied,
-    pool_wave_account: snap.pool_wave_account,
-    pool_usdc_account: snap.pool_usdc_account,
-  };
-}
-
-function mapStatus(status: ShiftStatusResponse): ShiftStatus {
-  return {
-    hash: status.hash,
-    status: status.status,
-    error: status.error,
-    synthesis_tick: status.synthesis_tick,
-    confirmations: status.confirmations,
-  };
-}
-
-export function createFluidicClient(): FluidicClient {
-  const sdk = new SdkClient({
+export function createClient() {
+  return new SdkClient({
     apiUrl: API_BASE,
-    minTick: 'latest',
+    minTick: 'none',
+  });
+}
+
+export async function registerWallet(client: SdkClient, wallet: Wallet) {
+  const res = await client.register(wallet.keypair.publicKeyHex);
+  return {
+    accountId: res.account_id,
+    waveAccount: res.wave_account,
+    usdcAccount: res.usdc_account,
+  };
+}
+
+export async function fetchBalances(
+  client: SdkClient,
+  accountId: string
+): Promise<TokenBalances> {
+  const res = await client.balance(accountId);
+  return {
+    wave: res.wave,
+    usdc: res.usdc,
+  };
+}
+
+function vcKey(accountId: string) {
+  return `${VC_KEY}:${accountId}`;
+}
+
+export function getNextVectorClock(accountId: string): bigint {
+  const raw = localStorage.getItem(vcKey(accountId));
+  const next = raw ? Number(raw) : 1;
+  return BigInt(Math.max(1, Number.isFinite(next) ? next : 1));
+}
+
+export function bumpVectorClock(accountId: string) {
+  const next = Number(getNextVectorClock(accountId)) + 1;
+  localStorage.setItem(vcKey(accountId), next.toString());
+}
+
+export async function syncVectorClocks(
+  client: SdkClient,
+  wallet: Wallet
+): Promise<void> {
+  try {
+    const res = await fetch(`${client.apiUrl}/api/shifts/recent`);
+    if (!res.ok) return;
+    const shifts = (await res.json()) as RecentShift[];
+    const waveCount = shifts.filter(
+      (s) => s.from === wallet.waveAccount && s.kind === 'stateful'
+    ).length;
+    const usdcCount = shifts.filter(
+      (s) => s.from === wallet.usdcAccount && s.kind === 'stateful'
+    ).length;
+    localStorage.setItem(vcKey(wallet.waveAccount), (waveCount + 1).toString());
+    localStorage.setItem(vcKey(wallet.usdcAccount), (usdcCount + 1).toString());
+  } catch (e) {
+    console.error('failed to sync vector clocks', e);
+  }
+}
+
+export async function executeSwap(
+  client: SdkClient,
+  wallet: Wallet,
+  direction: 'WAVE_TO_USDC' | 'USDC_TO_WAVE',
+  amount: bigint
+): Promise<SwapResult> {
+  const fromAccount = direction === 'WAVE_TO_USDC' ? wallet.waveAccount : wallet.usdcAccount;
+  const ownTime = getNextVectorClock(fromAccount);
+
+  const { poolInHash } = await submitSwap(client, {
+    signer: wallet.keypair,
+    direction,
+    amount,
+    vectorClock: {
+      entries: { [fromAccount]: ownTime },
+    },
+    nonce: BigInt(Date.now()),
   });
 
-  let { keypair, info: account } = loadOrCreateAccount();
-  let currentState: FluidicState = {
-    wave_reserve: '0',
-    usdc_reserve: '0',
-    price: 0,
-    throughput: 0,
-    latency_ms: 0,
-    metabolic_burned: '0',
-    commutative_applied: 0,
-    stateful_applied: 0,
-    pool_wave_account: '',
-    pool_usdc_account: '',
-  };
-  const listeners = new Set<(state: FluidicState) => void>();
-  let registered = false;
-  let wsUnsubscribe: (() => void) | null = null;
+  bumpVectorClock(fromAccount);
 
-  const notify = () => listeners.forEach((cb) => cb(currentState));
-
-  const connect = async () => {
-    if (wsUnsubscribe) return;
-
-    if (!registered) {
-      try {
-        const data = await sdk.register(keypair.publicKeyHex);
-        account.accountId = data.account_id;
-        account.waveAccount = data.wave_account;
-        account.usdcAccount = data.usdc_account;
-        localStorage.setItem('fluidic:account', JSON.stringify(account));
-        registered = true;
-      } catch (e) {
-        console.error('registration failed', e);
-      }
-    }
-
-    try {
-      currentState = mapState(await sdk.state());
-      notify();
-    } catch (e) {
-      console.error('initial state fetch failed', e);
-    }
-
-    wsUnsubscribe = sdk.subscribeSnapshots((snap) => {
-      currentState = mapState(snap);
-      notify();
-    });
-  };
-
-  const disconnect = () => {
-    wsUnsubscribe?.();
-    wsUnsubscribe = null;
-  };
-
-  const createAccount = async (): Promise<AccountInfo> => {
-    const next = createNewAccount();
-    keypair = next.keypair;
-    account = next.info;
-    registered = false;
-    await connect();
-    return account;
-  };
-
-  const swap = async (
-    from: 'WAVE' | 'USDC',
-    to: 'WAVE' | 'USDC',
-    amount: string
-  ): Promise<SwapResult> => {
-    if (from === to) throw new Error('cannot swap a token for itself');
-
-    const state = await sdk.state();
-    if (!state.pool_wave_account || !state.pool_usdc_account) {
-      throw new Error('pool accounts not loaded');
-    }
-
-    const toAccount = from === 'WAVE' ? state.pool_wave_account : state.pool_usdc_account;
-    const amountBig = BigInt(amount);
-    const nonce = BigInt(Date.now());
-
-    const shift = buildStatefulShift({
-      signer: keypair,
-      to: toAccount,
-      amount: amountBig,
-      vectorClock: {
-        entries: {
-          '0000000000000000000000000000000000000000000000000000000000000000': 1n,
-        },
-      },
-      nonce,
-      timestampNs: 0n,
-    });
-
-    await sdk.submitStateful(shift);
-    const hash = hashStatefulShift(shift);
-
-    return { status: 'queued', hash };
-  };
-
-  const getShiftStatus = async (hash: string): Promise<ShiftStatus> => {
-    return mapStatus(await sdk.shiftStatus(hash));
-  };
-
-  const getBalance = async (accountId: string): Promise<BalanceResponse> => {
-    return sdk.balance(accountId);
-  };
-
-  const subscribe = (callback: (state: FluidicState) => void) => {
-    listeners.add(callback);
-    callback(currentState);
-    return () => listeners.delete(callback);
-  };
+  const state = await client.state();
+  const waveReserve = BigInt(state.wave_reserve);
+  const usdcReserve = BigInt(state.usdc_reserve);
+  const quote = quoteSwap(direction, amount, waveReserve, usdcReserve);
 
   return {
-    get state() {
-      return currentState;
-    },
-    get account() {
-      return account;
-    },
-    get isConnected() {
-      return wsUnsubscribe !== null;
-    },
-    connect,
-    disconnect,
-    createAccount,
-    getBalance,
-    swap,
-    getShiftStatus,
-    subscribe,
+    poolInHash,
+    estimatedOut: quote.amountOut.toString(),
   };
+}
+
+export function subscribeToState(
+  client: SdkClient,
+  callback: (state: StateResponse) => void
+): () => void {
+  return client.subscribeSnapshots((snap) => {
+    callback(snap as StateResponse);
+  });
 }

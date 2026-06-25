@@ -88,12 +88,14 @@ export interface StatefulShiftParams {
   domain?: DomainId;
   nonce?: bigint;
   timestampNs?: bigint;
+  /** Optional explicit sender account; defaults to the signer's main account. */
+  from?: AccountId;
 }
 
 export function buildStatefulShift(
   params: StatefulShiftParams
 ): StatefulShift {
-  const from = params.signer.accountId;
+  const from = params.from ?? params.signer.accountId;
   const domain = params.domain ?? DEFAULT_DEX_DOMAIN;
   const predecessors = params.predecessors ?? [];
   const nonce = params.nonce ?? 0n;

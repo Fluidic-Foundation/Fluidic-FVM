@@ -81,6 +81,7 @@ export async function submitSwap(
 
   const poolIn = buildStatefulShift({
     signer: params.signer,
+    from,
     to,
     amount: params.amount,
     ...common,
