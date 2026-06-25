@@ -25,7 +25,9 @@ const sections = [
   { id: "run-a-node", title: "Run a node", icon: Cpu },
   { id: "sdk", title: "SDK reference", icon: Box },
   { id: "api", title: "API reference", icon: Radio },
-  { id: "evm", title: "EVM bridge", icon: Blocks },
+  { id: "web3-devs", title: "For Web3 devs", icon: Globe },
+  { id: "evm", title: "EVM compatibility", icon: Blocks },
+  { id: "deploy-tutorial", title: "Tutorial: deploy a contract", icon: Box },
   { id: "synthesis", title: "Synthesis & certificates", icon: Zap },
   { id: "validators", title: "Validators & staking", icon: Shield },
   { id: "quorum", title: "Quorum & finality", icon: Globe },
@@ -268,7 +270,8 @@ const commutative = buildCommutativeShift({
             </ul>
             <h3>EVM</h3>
             <ul>
-              <li><code>POST /api/evm/tx</code> — submit a raw Ethereum transaction.</li>
+              <li><code>POST /api/evm/tx</code> — submit a signed raw Ethereum transaction.</li>
+              <li><code>POST /rpc</code> — Ethereum JSON-RPC namespace (chain, balances, sendRaw, call, code, receipts).</li>
             </ul>
             <h3>Consensus</h3>
             <ul>
@@ -284,25 +287,262 @@ const commutative = buildCommutativeShift({
             </ul>
           </Section>
 
-          <Section id="evm" title="EVM bridge">
+          <Section id="web3-devs" title="For Web3 developers">
             <p>
-              Fluidic embeds <strong>revm</strong> to execute raw Ethereum transactions. The <code>/api/evm/tx</code> endpoint accepts a signed EIP-155 transaction, validates the ECDSA signature, derives a Fluidic account from the sender, and injects the transaction into the EVM pool. During synthesis, transactions are ordered by nonce and executed against the wave-field balances.
+              If you are coming from Ethereum or Solana, the fastest way to reason about Fluidic is to map concepts you already know. Fluidic is <strong>not</strong> an EVM chain and <strong>not</strong> an SVM chain, but it borrows the best parts of both: deterministic contract execution from Ethereum, and parallel, account-centric state from Solana.
             </p>
-            <pre><code>{`const tx = {
+
+            <h3>Concept map</h3>
+            <table>
+              <thead>
+                <tr><th>Ethereum / EVM</th><th>Solana / SVM</th><th>Fluidic</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Block</td><td>Slot</td><td><strong>Synthesis tick</strong></td></tr>
+                <tr><td>Transaction</td><td>Transaction / Instruction</td><td><strong>Shift</strong> (stateful or commutative)</td></tr>
+                <tr><td>Smart contract</td><td>Program</td><td><strong>EVM contract</strong> or <strong>domain</strong></td></tr>
+                <tr><td>Account (nonce + balance)</td><td>Account</td><td><strong>AccountId</strong> (Ed25519-derived)</td></tr>
+                <tr><td>Contract storage</td><td>Program-derived address (PDA)</td><td><strong>EVM account storage</strong> in revm, persisted across ticks</td></tr>
+                <tr><td>Mempool / block builder</td><td>Leader scheduling</td><td><strong>Gossip + oscillator</strong> (no leader)</td></tr>
+                <tr><td>Gas fee</td><td>Compute units + priority fee</td><td><strong>Metabolic burn</strong> per tick (currently subsidized)</td></tr>
+                <tr><td>Finality</td><td>Root + tower BFT</td><td><strong>2/3+1 stake-weighted certificates</strong></td></tr>
+              </tbody>
+            </table>
+
+            <h3>Stateful vs. commutative shifts</h3>
+            <p>
+              On Ethereum every transaction is linearly ordered. On Solana, instructions within a transaction can execute in parallel if they touch disjoint accounts. Fluidic makes that distinction explicit at the protocol level:
+            </p>
+            <ul>
+              <li><strong>Stateful shifts</strong> need causal ordering (transfers, EVM transactions). They go into the vector-clock DAG, exactly like Ethereum transactions need a total order.</li>
+              <li><strong>Commutative shifts</strong> are order-independent (AMM pool deltas, streaming payments). They are batched with an NTT, similar to how Solana parallelizes non-conflicting instructions.</li>
+            </ul>
+
+            <h3>Accounts and programs</h3>
+            <p>
+              A Fluidic account is a 32-byte <code>AccountId</code> derived from an Ed25519 public key. The node automatically derives WAVE and USDC token accounts from it. For EVM compatibility, any 20-byte Ethereum address is deterministically mapped to a 32-byte Fluidic account using <code>blake3("fluidic:evm-account:v1" || address)</code>, so an EVM wallet's balance is readable through both RPCs.
+            </p>
+            <p>
+              EVM contracts are just EVM accounts with code. They execute inside <strong>revm</strong>, the same interpreter used by Optimism, Arbitrum, and many L2s. Contract bytecode and storage persist across synthesis ticks, so you can deploy once and interact forever — exactly like on Ethereum.
+            </p>
+
+            <h3>From Base Sepolia to Fluidic</h3>
+            <p>
+              The recommended migration path for Base Sepolia contracts is to redeploy on Fluidic's EVM layer. Fluidic uses its own chain ID (<code>0xf1d1c</code> / <code>990492</code>), its own RPC URL, and deterministic balances derived from the Fluidic wave-field. You keep the same Solidity code, the same contract addresses (after deployment), and the same tooling.
+            </p>
+          </Section>
+
+          <Section id="evm" title="EVM compatibility">
+            <p>
+              Fluidic embeds <strong>revm</strong> to execute raw Ethereum transactions. The EVM state — account balances, nonces, contract bytecode, and contract storage — is persisted across synthesis ticks. You can deploy contracts, read state with <code>eth_call</code>, and verify code with <code>eth_getCode</code> exactly like on any EVM chain.
+            </p>
+
+            <h3>Network parameters</h3>
+            <table>
+              <thead>
+                <tr><th>Parameter</th><th>Value</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>RPC URL</td><td><code>https://api.testnet.fluidic.foundation/rpc</code></td></tr>
+                <tr><td>Chain ID</td><td><code>0xf1d1c</code> (decimal <code>990492</code>)</td></tr>
+                <tr><td>Currency</td><td>WAVE</td></tr>
+                <tr><td>Gas price</td><td>Ignored; execution is metered but currently subsidized</td></tr>
+                <tr><td>Block number</td><td>Maps to the latest synthesis tick</td></tr>
+              </tbody>
+            </table>
+
+            <h3>Supported JSON-RPC methods</h3>
+            <ul>
+              <li><code>eth_chainId</code> / <code>net_version</code></li>
+              <li><code>eth_gasPrice</code></li>
+              <li><code>eth_blockNumber</code></li>
+              <li><code>eth_getBlockByNumber</code></li>
+              <li><code>eth_getBalance</code></li>
+              <li><code>eth_getTransactionCount</code></li>
+              <li><code>eth_getCode</code></li>
+              <li><code>eth_call</code></li>
+              <li><code>eth_estimateGas</code></li>
+              <li><code>eth_sendRawTransaction</code></li>
+              <li><code>eth_getTransactionReceipt</code></li>
+              <li><code>web3_clientVersion</code></li>
+            </ul>
+            <h3>Funding EVM wallets</h3>
+            <p>
+              EVM balances are backed by Fluidic accounts. Before you can deploy or call a contract, fund the EVM address's mapped Fluidic account:
+            </p>
+            <pre><code>{`curl -X POST https://api.testnet.fluidic.foundation/api/evm/faucet \\
+  -H "Content-Type: application/json" \\
+  -d '{"address":"0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1"}'`}</code></pre>
+
+            <h3>Deploy a contract with Foundry</h3>
+            <pre><code>{`# foundry.toml
+[rpc_endpoints]
+fluidic = "https://api.testnet.fluidic.foundation/rpc"
+
+# Deploy (sign with a funded EVM private key)
+forge create src/MyContract.sol:MyContract \\
+  --rpc-url fluidic \\
+  --private-key $FLUIDIC_PK \\
+  --chain 990492`}</code></pre>
+
+            <h3>Deploy a contract with Hardhat</h3>
+            <pre><code>{`// hardhat.config.ts
+const config: HardhatUserConfig = {
+  networks: {
+    fluidic: {
+      url: "https://api.testnet.fluidic.foundation/rpc",
+      chainId: 990492,
+      accounts: [process.env.FLUIDIC_PK!],
+    },
+  },
+};
+
+// scripts/deploy.ts
+const factory = await ethers.getContractFactory("MyContract");
+const contract = await factory.deploy();
+await contract.waitForDeployment();
+console.log("deployed to:", await contract.getAddress());`}</code></pre>
+
+            <h3>Read and write from the SDK</h3>
+            <pre><code>{`import { createClient } from "@fluidic/sdk";
+
+const client = createClient({ apiUrl: "https://api.testnet.fluidic.foundation" });
+
+// Submit any signed EIP-155 transaction
+const txHash = await client.submitEvm({
   from: "0x...",
-  to: "0x...",
-  value: 1000n,
-  data: "0x",
+  to: contractAddress,
+  data: calldata,
+  value: 0n,
   gas_limit: 100000n,
   gas_price: 1n,
   nonce: 0,
-  chain_id: 1337,
-  v: 0,
+  chain_id: 990492,
+  v: 0n,
   r: "0x...",
   s: "0x...",
-};
+});
 
-await client.submitEvm(tx);`}</code></pre>
+// Read state via the standard RPC
+const result = await fetch("https://api.testnet.fluidic.foundation/rpc", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "eth_call",
+    params: [{ to: contractAddress, data: calldata }, "latest"],
+  }),
+});
+const { result: returnData } = await result.json();`}</code></pre>
+
+            <h3>How balances work for EVM wallets</h3>
+            <p>
+              EVM balances are backed by the Fluidic wave-field. Before an EVM transaction can execute, the sender must have a Fluidic balance at the deterministic account derived from their EVM address. Use the <code>/api/account/register</code> and <code>/faucet</code> endpoints, or send a stateful transfer to that account, to fund a wallet.
+            </p>
+
+            <h3>Persistence guarantees</h3>
+            <p>
+              EVM state is committed at the end of every synthesis tick and written to the node's on-disk snapshot. Restarting a node replays the snapshot, so deployed contracts, nonces, and storage survive reboots. The snapshot also propagates through consensus: each synthesis certificate includes an <code>evm_root</code>, making EVM state auditable and reproducible across the mesh.
+            </p>
+          </Section>
+
+          <Section id="deploy-tutorial" title="Tutorial: deploy a contract">
+            <p>
+              This tutorial deploys a simple <code>Counter</code> Solidity contract on the Fluidic testnet. The steps are the same for any Base Sepolia contract: fund the EVM wallet, compile with your normal toolchain, and deploy to the Fluidic RPC.
+            </p>
+
+            <h3>Prerequisites</h3>
+            <ul>
+              <li><a href="https://book.getfoundry.sh" target="_blank" rel="noreferrer">Foundry</a> installed (<code>forge</code>, <code>cast</code>).</li>
+              <li>An EVM private key. This tutorial uses the standard Ganache test key <code>0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d7d21715b23b1d</code> (address <code>0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1</code>). Do not use this key for real funds.</li>
+            </ul>
+
+            <h3>1. Create the project</h3>
+            <pre><code>{`mkdir counter && cd counter
+
+cat > foundry.toml <<'EOF'
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+[rpc_endpoints]
+fluidic = "https://api.testnet.fluidic.foundation/rpc"
+EOF
+
+cat > src/Counter.sol <<'EOF'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract Counter {
+    uint256 public count;
+    event Incremented(uint256 newCount);
+
+    function increment() external {
+        count += 1;
+        emit Incremented(count);
+    }
+
+    function set(uint256 x) external {
+        count = x;
+    }
+}
+EOF
+
+forge build`}</code></pre>
+
+            <h3>2. Fund the deployer</h3>
+            <pre><code>{`export PK=0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d7d21715b23b1d
+export ADDR=$(cast wallet address --private-key $PK)
+
+curl -X POST https://api.testnet.fluidic.foundation/api/evm/faucet \\
+  -H "Content-Type: application/json" \\
+  -d "{\"address\":\"$ADDR\"}"
+
+# Check the mapped Fluidic balance
+cast balance --rpc-url https://api.testnet.fluidic.foundation/rpc $ADDR`}</code></pre>
+
+            <h3>3. Deploy</h3>
+            <pre><code>{`forge create src/Counter.sol:Counter \\
+  --rpc-url https://api.testnet.fluidic.foundation/rpc \\
+  --private-key $PK \\
+  --chain 990492 \\
+  --legacy \\
+  --broadcast`}</code></pre>
+
+            <h3>4. Verify deployment</h3>
+            <p>
+              If the transaction succeeds, Forge prints the deployed address. You can read it with <code>eth_getCode</code>:
+            </p>
+            <pre><code>{`cast code --rpc-url https://api.testnet.fluidic.foundation/rpc 0xC89Ce4735882C9F0f0FE26686c53074E09B0D550`}</code></pre>
+
+            <h3>5. Read and write state</h3>
+            <pre><code>{`# Read count (should be 0)
+cast call 0xC89Ce4735882C9F0f0FE26686c53074E09B0D550 \\
+  "count()(uint256)" \\
+  --rpc-url https://api.testnet.fluidic.foundation/rpc
+
+# Increment
+cast send 0xC89Ce4735882C9F0f0FE26686c53074E09B0D550 \\
+  "increment()" \\
+  --rpc-url https://api.testnet.fluidic.foundation/rpc \\
+  --private-key $PK \\
+  --chain 990492 \\
+  --legacy
+
+# Read count again (should be 1)
+cast call 0xC89Ce4735882C9F0f0FE26686c53074E09B0D550 \\
+  "count()(uint256)" \\
+  --rpc-url https://api.testnet.fluidic.foundation/rpc`}</code></pre>
+
+            <h3>6. Bring a Base Sepolia contract across</h3>
+            <p>
+              To migrate an existing Base Sepolia contract, copy its source into the same Foundry project, keep the same compiler version, and run the same <code>forge create</code> command. The contract will receive a deterministic address on Fluidic based on the deployer nonce. If you need the exact same address as on Base Sepolia, use the same deployer account and nonce; otherwise treat Fluidic as a fresh deployment and update your frontend's contract addresses.
+            </p>
+            <p>
+              For contracts that read Base Sepolia state (e.g., an oracle or bridge), option 1 from the introduction is still the right path: lock assets on Base Sepolia and run a relayer that pushes state into Fluidic.
+            </p>
           </Section>
 
           <Section id="synthesis" title="Synthesis & certificates">
