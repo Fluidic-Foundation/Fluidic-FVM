@@ -312,8 +312,8 @@ export default function ExplorerPage() {
             ) : searchResult.type === "account" && searchResult.data ? (
               <div className="grid gap-2 text-sm md:grid-cols-4">
                 <KV label="Account" value={shortHash(searchResult.data.account)} full={searchResult.data.account} />
-                <KV label="WAVE balance" value={formatAmount(searchResult.data.wave)} />
-                <KV label="USDC balance" value={formatAmount(searchResult.data.usdc)} />
+                <KV label="WAVE balance" value={formatAmount(searchResult.data.wave)} full={searchResult.data.wave} />
+                <KV label="USDC balance" value={formatAmount(searchResult.data.usdc)} full={searchResult.data.usdc} />
                 {searchResult.data.shift && <KV label="Shift status" value={<StatusBadge status={searchResult.data.shift.status} />} />}
               </div>
             ) : (
@@ -376,7 +376,7 @@ export default function ExplorerPage() {
                           {s.from ? shortHash(s.from) : s.domain ? shortHash(s.domain) : "—"}
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-slate-400">{s.to ? shortHash(s.to) : "—"}</td>
-                        <td className="px-4 py-3 text-right font-mono text-xs text-slate-300">
+                        <td className="px-4 py-3 text-right font-mono text-xs text-slate-300" title={s.amount}>
                           {s.amount ? formatAmount(s.amount) : "—"}
                         </td>
                         <td className="px-4 py-3">
@@ -468,7 +468,7 @@ export default function ExplorerPage() {
                       </span>
                       <span className="font-mono text-xs text-slate-300">{shortHash(o.account)}</span>
                     </div>
-                    <span className="font-mono text-xs text-slate-500">{formatAmount(o.stake)}</span>
+                    <span className="font-mono text-xs text-slate-500" title={o.stake}>{formatAmount(o.stake)}</span>
                   </div>
                 ))
               )}
@@ -501,7 +501,7 @@ export default function ExplorerPage() {
               <KV label="Hash" value={shortHash(selectedShift.hash)} full={selectedShift.hash} />
               <KV label="Type" value={<TypeBadge kind={selectedShift.kind} />} />
               <KV label="Status" value={<StatusBadge status={selectedShift.status} />} />
-              <KV label="Amount" value={selectedShift.amount ? formatAmount(selectedShift.amount) : "—"} />
+              <KV label="Amount" value={selectedShift.amount ? formatAmount(selectedShift.amount) : "—"} full={selectedShift.amount} />
               <KV label="Domain" value={selectedShift.domain ? decodeDomain(selectedShift.domain) : "—"} full={selectedShift.domain} />
               <KV label="From" value={selectedShift.from ? shortHash(selectedShift.from) : "—"} full={selectedShift.from} />
               <KV label="To" value={selectedShift.to ? shortHash(selectedShift.to) : "—"} full={selectedShift.to} />
@@ -639,13 +639,25 @@ function formatAmount(raw: string): string {
   try {
     const n = BigInt(raw);
     if (n === BigInt(0)) return "0";
-    // Show full if small, otherwise abbreviated.
     const s = n.toString();
-    if (s.length <= 9) return s;
-    const units = Number(n) / 1e6;
-    if (units < 1000) return `${units.toFixed(2)}M`;
-    if (units < 1_000_000) return `${(units / 1e3).toFixed(2)}B`;
-    return `${(units / 1e6).toFixed(2)}T`;
+    // Show the exact value with comma grouping for anything that fits comfortably.
+    if (s.length <= 18) {
+      return BigInt(s).toLocaleString("en-US");
+    }
+    // Fall back to compact notation with 4 significant figures for huge values.
+    const suffixes = ["", "K", "M", "B", "T", "P", "E", "Z", "Y"];
+    const exp = Math.min(suffixes.length - 1, Math.floor((s.length - 1) / 3));
+    const divisor = BigInt("1" + "0".repeat(exp * 3));
+    const scaled = Number(n) / Number(divisor);
+    const formatted =
+      scaled >= 1000
+        ? scaled.toFixed(0)
+        : scaled >= 100
+        ? scaled.toFixed(1)
+        : scaled >= 10
+        ? scaled.toFixed(2)
+        : scaled.toFixed(3);
+    return `${formatted.replace(/\.0+$/, "")} ${suffixes[exp]}`;
   } catch {
     return raw;
   }
