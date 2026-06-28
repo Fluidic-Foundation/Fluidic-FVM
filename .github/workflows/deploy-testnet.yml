@@ -96,6 +96,7 @@ jobs:
         env:
           VITE_FLUIDIC_API: https://api.testnet.fluidic.foundation
           VITE_FLUIDIC_WS: wss://api.testnet.fluidic.foundation
+          DAPP_BASE: /
         run: |
           cd dapp
           npm ci

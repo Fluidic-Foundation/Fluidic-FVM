@@ -76,7 +76,7 @@ export default function FluidicPage() {
                   <DropdownItem icon={Cpu} href="/docs/api-reference/typescript-sdk" title="SDK reference" desc="TypeScript client, keys, and swaps." />
                 </DropdownSection>
                 <DropdownSection title="References">
-                  <DropdownItem icon={AppWindow} href="/dapp" title="Reference dApp" desc="Live example: wallet, faucet, and swap." />
+                  <DropdownItem icon={AppWindow} href="https://app.testnet.fluidic.foundation" title="Reference dApp" desc="Live example: wallet, faucet, and swap." />
                   <DropdownItem icon={Radio} href="/docs/api-reference/rest-api" title="API reference" desc="REST and WebSocket endpoints." />
                   <DropdownItem icon={Blocks} href="/docs/core-concepts/evm-compatibility" title="EVM bridge" desc="Execute raw Ethereum transactions." />
                   <DropdownItem icon={Terminal} href="https://github.com/Fluidic-Foundation/Fluidic-FVM" title="GitHub" desc="Open-source node runtime." />
@@ -465,7 +465,7 @@ console.log(poolInHash);`}
             <p className="node-desc text-sm max-w-2xl">
               A minimal, live example for developers: create a wallet, drip 1,000 WAVE + 1,000 USDC from the faucet, and swap continuously on the testnet mesh. Open-source and ready to fork.
             </p>
-            <Link href="/dapp" className="docs-btn shrink-0">
+            <Link href="https://app.testnet.fluidic.foundation" className="docs-btn shrink-0">
               OPEN REFERENCE DAPP
               <ArrowRight className="h-3 w-3" />
             </Link>
