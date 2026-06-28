@@ -7,48 +7,20 @@ A minimal React + TypeScript reference application for interacting with a Fluidi
 - Querying WAVE/USDC balances.
 - Submitting commutative WAVE/USDC swaps through the continuous-state mesh.
 
-This dApp is intentionally simple — it is meant as a starting point for builders integrating the [`@fluidic/sdk`](../sdk/typescript).
+This dApp is intentionally simple — it is meant as a starting point for builders integrating the [`@fluidic/sdk`](node_modules/@fluidic/sdk).
 
 ## Live version
 
 The reference dApp is deployed at:
 
 ```
-https://app.testnet.fluidic.foundation
+https://testnet.fluidic.foundation/dapp
 ```
 
 It points to the public testnet API by default:
 
 ```
 https://api.testnet.fluidic.foundation
-```
-
-## Run locally
-
-### From the monorepo
-
-If you cloned [`Kolacjechutny/fluidic`](https://github.com/Kolacjechutny/fluidic), the SDK is resolved through the local `file:` link:
-
-```bash
-cd dapp
-npm install
-npm run dev
-```
-
-### Standalone
-
-If you only have the `dapp/` source, install the SDK manually. The easiest way is to build it from the main repo:
-
-```bash
-git clone https://github.com/Kolacjechutny/fluidic.git ../fluidic
-cd ../fluidic/sdk/typescript
-npm install
-npm link
-
-cd ../../../dapp
-npm link @fluidic/sdk
-npm install
-npm run dev
 ```
 
 ## Environment variables
