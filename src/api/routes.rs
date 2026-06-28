@@ -343,6 +343,15 @@ async fn submit_stateful(
     // If the shift targets a pool, create a matching payout.
     let is_wave_to_pool = shift.to == state.pool_wave_account;
     let is_usdc_to_pool = shift.to == state.pool_usdc_account;
+    let _is_pool_payout = shift.from == state.pool_wave_account || shift.from == state.pool_usdc_account;
+
+    let token = if is_wave_to_pool || shift.from == state.pool_wave_account {
+        "WAVE"
+    } else if is_usdc_to_pool || shift.from == state.pool_usdc_account {
+        "USDC"
+    } else {
+        "units"
+    };
 
     if is_wave_to_pool || is_usdc_to_pool {
         let main_account = state.main_account(shift.from)
@@ -383,6 +392,7 @@ async fn submit_stateful(
         from: Some(shift.from.to_string()),
         to: Some(shift.to.to_string()),
         amount: Some(shift.amount.to_string()),
+        token: Some(token.to_string()),
         timestamp_ns: shift.timestamp_ns,
     });
     state
@@ -436,6 +446,7 @@ async fn submit_commutative(
         from: None,
         to: None,
         amount: Some(shift.delta.to_string()),
+        token: Some("units".to_string()),
         timestamp_ns: shift.timestamp_ns,
     });
     state

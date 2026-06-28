@@ -48,6 +48,7 @@ interface RecentShift {
   from?: string;
   to?: string;
   amount?: string;
+  token?: string;
   timestamp_ns: number;
 }
 
@@ -344,7 +345,7 @@ export default function ExplorerPage() {
                     <th className="px-4 py-2.5 font-medium">Type</th>
                     <th className="px-4 py-2.5 font-medium">From / Domain</th>
                     <th className="px-4 py-2.5 font-medium">To</th>
-                    <th className="px-4 py-2.5 font-medium text-right">Amount</th>
+                    <th className="px-4 py-2.5 font-medium text-right">Amount / Token</th>
                     <th className="px-4 py-2.5 font-medium">Status</th>
                     <th className="px-4 py-2.5 font-medium text-right">Age</th>
                   </tr>
@@ -376,8 +377,15 @@ export default function ExplorerPage() {
                           {s.from ? shortHash(s.from) : s.domain ? shortHash(s.domain) : "—"}
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-slate-400">{s.to ? shortHash(s.to) : "—"}</td>
-                        <td className="px-4 py-3 text-right font-mono text-xs text-slate-300" title={s.amount}>
-                          {s.amount ? formatAmount(s.amount) : "—"}
+                        <td className="px-4 py-3 text-right font-mono text-xs text-slate-300" title={s.amount ? `${s.amount} ${s.token || ""}` : undefined}>
+                          {s.amount ? (
+                            <span className="inline-flex items-baseline gap-1.5">
+                              {formatAmount(s.amount)}
+                              <span className="text-[10px] uppercase text-slate-500">{s.token || "units"}</span>
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <StatusBadge status={s.status as any} />
@@ -501,7 +509,11 @@ export default function ExplorerPage() {
               <KV label="Hash" value={shortHash(selectedShift.hash)} full={selectedShift.hash} />
               <KV label="Type" value={<TypeBadge kind={selectedShift.kind} />} />
               <KV label="Status" value={<StatusBadge status={selectedShift.status} />} />
-              <KV label="Amount" value={selectedShift.amount ? formatAmount(selectedShift.amount) : "—"} full={selectedShift.amount} />
+              <KV
+                label="Amount"
+                value={selectedShift.amount ? `${formatAmount(selectedShift.amount)} ${selectedShift.token || "units"}` : "—"}
+                full={selectedShift.amount ? `${selectedShift.amount} ${selectedShift.token || ""}` : undefined}
+              />
               <KV label="Domain" value={selectedShift.domain ? decodeDomain(selectedShift.domain) : "—"} full={selectedShift.domain} />
               <KV label="From" value={selectedShift.from ? shortHash(selectedShift.from) : "—"} full={selectedShift.from} />
               <KV label="To" value={selectedShift.to ? shortHash(selectedShift.to) : "—"} full={selectedShift.to} />

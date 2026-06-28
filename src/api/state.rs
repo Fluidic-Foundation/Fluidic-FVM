@@ -54,6 +54,7 @@ pub struct RecentShift {
     pub from: Option<String>,
     pub to: Option<String>,
     pub amount: Option<String>,
+    pub token: Option<String>,
     pub timestamp_ns: u64,
 }
 

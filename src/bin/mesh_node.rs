@@ -318,6 +318,7 @@ async fn main() {
                     from: None,
                     to: None,
                     amount: Some(shift.delta.to_string()),
+                    token: Some("WAVE".to_string()),
                     timestamp_ns: shift.timestamp_ns,
                 });
             }
