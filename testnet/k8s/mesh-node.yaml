@@ -19,7 +19,7 @@ spec:
           emptyDir: {}
       containers:
         - name: mesh-node
-          image: us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node@sha256:2da00f433ba763d22e3c1d01e36215fa10700009f3b6017a3fd8f50c085accb5
+          image: us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node:latest
           imagePullPolicy: Always
           ports:
             - name: gossip

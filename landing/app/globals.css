@@ -1435,4 +1435,18 @@ button {
     padding: 6px 12px !important;
     font-size: 10px !important;
   }
+  
+  .start-coding-footer {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 16px !important;
+  }
+  .start-coding-footer p {
+    max-width: 100% !important;
+  }
+}
+
+/* Force pixels to not squish in the flex row */
+.pixel-dot {
+  flex-shrink: 0;
 }

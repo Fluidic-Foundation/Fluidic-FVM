@@ -421,7 +421,7 @@ const { poolInHash } = await submitSwap(client, {
 console.log(poolInHash);`}
               </pre>
             </div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: '16px' }}>
+            <div className="start-coding-footer" style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: '16px' }}>
               <p className="node-desc" style={{ margin: 0, maxWidth: '70%' }}>
                 Register an account, sign a swap, and watch it synthesize in the explorer.
               </p>
