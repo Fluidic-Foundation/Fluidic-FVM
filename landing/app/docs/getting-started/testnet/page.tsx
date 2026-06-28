@@ -21,7 +21,7 @@ export default function TestnetPage() {
           <tr><td>Explorer</td><td><code>https://testnet.fluidic.foundation/explorer/</code></td></tr>
           <tr><td>Reference dApp</td><td><code>https://app.testnet.fluidic.foundation</code></td></tr>
           <tr><td>Gossip seed</td><td><code>34.56.159.76:7000</code></td></tr>
-          <tr><td>Container image</td><td><code>ghcr.io/Fluidic-Foundation/Fluidic-FVM:latest</code></td></tr>
+          <tr><td>Container image</td><td><code>us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node:latest</code></td></tr>
         </tbody>
       </table>
 
@@ -30,7 +30,7 @@ export default function TestnetPage() {
   -p 8080:8080 -p 7000:7000 \\
   -e OSCILLATOR_ID=node-1 \\
   -e PEERS="34.56.159.76:7000" \\
-  ghcr.io/Fluidic-Foundation/Fluidic-FVM:latest`}</code></pre>
+  us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node:latest`}</code></pre>
 
       <h2>Fund an EVM wallet</h2>
       <p>
