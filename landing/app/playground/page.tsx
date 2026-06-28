@@ -39,6 +39,7 @@ export default function PlaygroundPage() {
   const [swapLoading, setSwapLoading] = useState(false);
   const [direction, setDirection] = useState<"WAVE_TO_USDC" | "USDC_TO_WAVE">("WAVE_TO_USDC");
   const [amount, setAmount] = useState<string>("10");
+  const [swapNonces, setSwapNonces] = useState<Record<string, number>>({});
   const [evmAddress, setEvmAddress] = useState<string>("");
   const [faucetStatus, setFaucetStatus] = useState<string>("");
   const [rawMethod, setRawMethod] = useState<"GET" | "POST">("GET");
@@ -138,12 +139,16 @@ export default function PlaygroundPage() {
     try {
       const client = new sdk.FluidicClient({ apiUrl: API_URL });
       const signer = sdk.FluidicKeypair.fromSecretKey(kp.secretKey);
+      const fromAccount = direction === "WAVE_TO_USDC" ? signer.waveAccount : signer.usdcAccount;
+      const nonce = (swapNonces[fromAccount] ?? 0) + 1;
+      const vectorClock = { entries: { [fromAccount]: BigInt(nonce) } };
       const result = await sdk.submitSwap(client, {
         signer,
         direction,
         amount: BigInt(Math.floor(Number(amount) * 1e12)),
-        vectorClock: { entries: {} },
+        vectorClock,
       });
+      setSwapNonces((prev) => ({ ...prev, [fromAccount]: nonce }));
       setSwapStatus(`Swap queued. Pool-in hash: ${result.poolInHash}`);
     } catch (e: any) {
       setSwapStatus(`Swap failed: ${e.message}`);
@@ -363,7 +368,7 @@ export default function PlaygroundPage() {
             <CodeCard
               title="Register + faucet"
               lang="js"
-              code={`import { FluidicClient, FluidicKeypair } from "@fluidic/sdk";
+              code={`import { FluidicClient, FluidicKeypair, submitSwap } from "@fluidic/sdk";
 
 const client = new FluidicClient({ apiUrl: "${API_URL}" });
 const signer = FluidicKeypair.generate();
@@ -374,8 +379,13 @@ await fetch("${API_URL}/api/account/register", {
   body: JSON.stringify({ public_key_hex: signer.publicKeyHex }),
 });
 
-const balance = await client.balance(signer.accountId);
-console.log(balance);`}
+const result = await submitSwap(client, {
+  signer,
+  direction: "WAVE_TO_USDC",
+  amount: 1000000000000n, // 1 WAVE
+  vectorClock: { entries: { [signer.waveAccount]: 1n } },
+});
+console.log(result);`}
             />
           </div>
         </section>
