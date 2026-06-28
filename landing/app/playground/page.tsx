@@ -1,10 +1,15 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Beaker, Copy, FlaskConical, RefreshCw } from "lucide-react";
 
 const API_URL = "https://api.testnet.fluidic.foundation";
+
+const CodeRunner = dynamic(() => import("./code-runner").then((m) => m.CodeRunner), {
+  ssr: false,
+});
 
 type FluidicSdk = typeof import("@fluidic-foundation/sdk");
 
@@ -359,6 +364,9 @@ export default function PlaygroundPage() {
             </pre>
           )}
         </section>
+
+        {/* Live code runner */}
+        {sdk && <CodeRunner sdk={sdk} />}
 
         {/* Code snippets */}
         <section className="rounded-2xl border border-white/10 bg-white/5 p-6 space-y-4">
