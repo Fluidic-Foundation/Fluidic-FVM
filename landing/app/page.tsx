@@ -8,6 +8,7 @@ import {
   Box,
   ChevronDown,
   Cpu,
+  FlaskConical,
   Globe,
   Layers,
   Menu,
@@ -72,6 +73,7 @@ export default function FluidicPage() {
               <DropdownGrid>
                 <DropdownSection title="Start building">
                   <DropdownItem icon={Terminal} href="/docs/getting-started/quickstart" title="Quickstart" desc="Install the SDK and submit your first shift." />
+                  <DropdownItem icon={FlaskConical} href="/playground" title="Developer console" desc="Generate keys, faucet, swap, and explore the API in the browser." />
                   <DropdownItem icon={Layers} href="/docs/core-concepts/shifts" title="Architecture" desc="NTT, vector-clock DAG, and synthesis." />
                   <DropdownItem icon={Cpu} href="/docs/api-reference/typescript-sdk" title="SDK reference" desc="TypeScript client, keys, and swaps." />
                 </DropdownSection>
