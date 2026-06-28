@@ -4,7 +4,7 @@ import {
   submitSwap,
   quoteSwap,
   type StateResponse,
-} from '@fluidic/sdk';
+} from '@fluidic-foundation/sdk';
 
 const API_BASE = import.meta.env.VITE_FLUIDIC_API || 'https://api.testnet.fluidic.foundation';
 

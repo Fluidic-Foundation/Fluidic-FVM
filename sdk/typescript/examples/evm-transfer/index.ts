@@ -1,4 +1,4 @@
-import { FluidicClient, FluidicEvmProvider } from "@fluidic/sdk";
+import { FluidicClient, FluidicEvmProvider } from "@fluidic-foundation/sdk";
 import { Wallet, parseEther } from "ethers";
 
 async function main() {

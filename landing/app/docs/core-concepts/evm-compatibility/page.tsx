@@ -78,7 +78,7 @@ await contract.waitForDeployment();
 console.log("deployed to:", await contract.getAddress());`}</code></pre>
 
       <h2>Read and write from the SDK</h2>
-      <pre><code>{`import { createClient } from "@fluidic/sdk";
+      <pre><code>{`import { createClient } from "@fluidic-foundation/sdk";
 
 const client = createClient({ apiUrl: "https://api.testnet.fluidic.foundation" });
 

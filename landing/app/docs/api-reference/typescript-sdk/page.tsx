@@ -11,7 +11,7 @@ export default function TypeScriptSdkPage() {
       </p>
 
       <h2>Installation</h2>
-      <pre><code>{`npm install @fluidic/sdk
+      <pre><code>{`npm install @fluidic-foundation/sdk
 # or link from the repo
 npm link /path/to/fluidic/sdk/typescript`}</code></pre>
 
@@ -31,14 +31,14 @@ npm link /path/to/fluidic/sdk/typescript`}</code></pre>
       </ul>
 
       <h2>Keypairs</h2>
-      <pre><code>{`import { FluidicKeypair } from "@fluidic/sdk";
+      <pre><code>{`import { FluidicKeypair } from "@fluidic-foundation/sdk";
 
 const wallet = FluidicKeypair.generate();
 console.log("account:", wallet.accountId);
 console.log("public key:", wallet.publicKeyHex);`}</code></pre>
 
       <h2>Building shifts</h2>
-      <pre><code>{`import { buildStatefulShift, buildCommutativeShift } from "@fluidic/sdk";
+      <pre><code>{`import { buildStatefulShift, buildCommutativeShift } from "@fluidic-foundation/sdk";
 
 const stateful = buildStatefulShift({
   signer: wallet,
@@ -57,7 +57,7 @@ const commutative = buildCommutativeShift({
 });`}</code></pre>
 
       <h2>Submit a swap</h2>
-      <pre><code>{`import { submitSwap } from "@fluidic/sdk";
+      <pre><code>{`import { submitSwap } from "@fluidic-foundation/sdk";
 
 const { poolInHash } = await submitSwap(client, {
   signer: wallet,

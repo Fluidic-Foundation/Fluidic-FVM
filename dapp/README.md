@@ -7,7 +7,7 @@ A minimal React + TypeScript reference application for interacting with a Fluidi
 - Querying WAVE/USDC balances.
 - Submitting commutative WAVE/USDC swaps through the continuous-state mesh.
 
-This dApp is intentionally simple — it is meant as a starting point for builders integrating the [`@fluidic/sdk`](node_modules/@fluidic/sdk).
+This dApp is intentionally simple — it is meant as a starting point for builders integrating the [`@fluidic-foundation/sdk`](node_modules/@fluidic-foundation/sdk).
 
 ## Live version
 

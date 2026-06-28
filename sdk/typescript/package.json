@@ -1,7 +1,17 @@
 {
-  "name": "@fluidic/sdk",
+  "name": "@fluidic-foundation/sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for the Fluidic blockless wave-field mesh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kolacjechutny/fluidic.git",
+    "directory": "sdk/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/Kolacjechutny/fluidic/issues"
+  },
+  "homepage": "https://testnet.fluidic.foundation/playground",
+  "keywords": ["fluidic", "blockless", "wave-field", "sdk", "ed25519", "mesh"],
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

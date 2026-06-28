@@ -2,7 +2,7 @@ import {
   FluidicClient,
   FluidicKeypair,
   submitSwap,
-} from "@fluidic/sdk";
+} from "@fluidic-foundation/sdk";
 
 async function main() {
   const apiUrl = process.env.FLUIDIC_API_URL ?? "https://api.testnet.fluidic.foundation";

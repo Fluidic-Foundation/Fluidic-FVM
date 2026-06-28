@@ -27,12 +27,12 @@ export default function QuickstartPage() {
       </p>
 
       <h2>2. Install the SDK</h2>
-      <pre><code>{`npm install @fluidic/sdk
+      <pre><code>{`npm install @fluidic-foundation/sdk
 # or link from the repo
 npm link /path/to/fluidic/sdk/typescript`}</code></pre>
 
       <h2>3. Submit a swap</h2>
-      <pre><code>{`import { FluidicClient, FluidicKeypair, submitSwap } from "@fluidic/sdk";
+      <pre><code>{`import { FluidicClient, FluidicKeypair, submitSwap } from "@fluidic-foundation/sdk";
 
 const client = new FluidicClient({ apiUrl: "http://localhost:8080" });
 const wallet = FluidicKeypair.generate();

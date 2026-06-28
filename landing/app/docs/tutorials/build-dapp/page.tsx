@@ -17,7 +17,7 @@ export default function BuildDappPage() {
       </ul>
 
       <h2>1. Install the SDK</h2>
-      <pre><code>{`npm install @fluidic/sdk
+      <pre><code>{`npm install @fluidic-foundation/sdk
 # or link from the repo
 npm link /path/to/fluidic/sdk/typescript`}</code></pre>
 
@@ -25,7 +25,7 @@ npm link /path/to/fluidic/sdk/typescript`}</code></pre>
       <p>
         Generate an Ed25519 keypair, then register the public key with the node. Registration seeds the account with test tokens.
       </p>
-      <pre><code>{`import { FluidicClient, FluidicKeypair } from "@fluidic/sdk";
+      <pre><code>{`import { FluidicClient, FluidicKeypair } from "@fluidic-foundation/sdk";
 
 const client = new FluidicClient({
   apiUrl: "https://api.testnet.fluidic.foundation",
@@ -37,7 +37,7 @@ await client.register(wallet.publicKeyHex);
 console.log("account:", wallet.accountId);`}</code></pre>
 
       <h2>3. Submit a swap</h2>
-      <pre><code>{`import { submitSwap } from "@fluidic/sdk";
+      <pre><code>{`import { submitSwap } from "@fluidic-foundation/sdk";
 
 const { poolInHash } = await submitSwap(client, {
   signer: wallet,
@@ -55,7 +55,7 @@ console.log("status:", status);`}</code></pre>
 
       <h2>4. Wire it to a React component</h2>
       <pre><code>{`import { useEffect, useState } from "react";
-import { FluidicClient, FluidicKeypair, submitSwap } from "@fluidic/sdk";
+import { FluidicClient, FluidicKeypair, submitSwap } from "@fluidic-foundation/sdk";
 
 const client = new FluidicClient({
   apiUrl: "https://api.testnet.fluidic.foundation",

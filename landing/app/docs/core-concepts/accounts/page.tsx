@@ -11,7 +11,7 @@ export default function AccountsPage() {
       </p>
 
       <h2>Creating a wallet with the SDK</h2>
-      <pre><code>{`import { FluidicKeypair } from "@fluidic/sdk";
+      <pre><code>{`import { FluidicKeypair } from "@fluidic-foundation/sdk";
 
 const wallet = FluidicKeypair.generate();
 console.log("account:", wallet.accountId);

@@ -6,7 +6,7 @@ import { ArrowLeft, Beaker, Copy, FlaskConical, RefreshCw } from "lucide-react";
 
 const API_URL = "https://api.testnet.fluidic.foundation";
 
-type FluidicSdk = typeof import("@fluidic/sdk");
+type FluidicSdk = typeof import("@fluidic-foundation/sdk");
 
 interface AccountInfo {
   accountId: string;
@@ -48,7 +48,7 @@ export default function PlaygroundPage() {
   const [rawResponse, setRawResponse] = useState<string>("");
 
   useEffect(() => {
-    import("@fluidic/sdk").then((mod) => setSdk(mod));
+    import("@fluidic-foundation/sdk").then((mod) => setSdk(mod));
   }, []);
 
   useEffect(() => {
@@ -364,11 +364,11 @@ export default function PlaygroundPage() {
         <section className="rounded-2xl border border-white/10 bg-white/5 p-6 space-y-4">
           <h3 className="text-xl font-semibold">Quick code</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <CodeCard title="Install SDK" lang="bash" code="npm install @fluidic/sdk" />
+            <CodeCard title="Install SDK" lang="bash" code="npm install @fluidic-foundation/sdk" />
             <CodeCard
               title="Register + faucet"
               lang="js"
-              code={`import { FluidicClient, FluidicKeypair, submitSwap } from "@fluidic/sdk";
+              code={`import { FluidicClient, FluidicKeypair, submitSwap } from "@fluidic-foundation/sdk";
 
 const client = new FluidicClient({ apiUrl: "${API_URL}" });
 const signer = FluidicKeypair.generate();
