@@ -12,10 +12,16 @@ export default function QuickstartPage() {
 
       <h2>1. Run a local node</h2>
       <pre><code>{`docker run -d --name fluidic-node \\
+  --restart unless-stopped \\
   -p 8080:8080 -p 7000:7000 \\
-  -e OSCILLATOR_ID=node-1 \\
+  -e OSCILLATOR_ID=12345 \\
   -e PEERS="34.56.159.76:7000" \\
+  -e FLUIDIC_DATA_DIR=/data \\
+  -v "$HOME/fluidic-data:/data" \\
   us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node:latest`}</code></pre>
+      <p>
+        Use a <strong>unique numeric</strong> <code>OSCILLATOR_ID</code> (e.g. <code>12345</code>, not the default <code>node-1</code>). Two nodes with the same ID share a keypair and will slash each other. Mount <code>/data</code> so your snapshot and identity survive restarts.
+      </p>
       <p>
         The container exposes the HTTP API on port <code>8080</code> and gossip on port <code>7000</code>. On first boot the node derives an operator keypair, seeds a genesis balance, and stakes it so it can produce certificates immediately.
       </p>

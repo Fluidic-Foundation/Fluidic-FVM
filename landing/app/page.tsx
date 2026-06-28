@@ -487,8 +487,9 @@ console.log(poolInHash);`}
               <span className="code-comment" style={{ color: 'rgba(255,255,255,0.4)' }}># One command joins the testnet mesh.</span><br /><br />
               <span className="code-keyword">docker</span> run -d --name fluidic-node <span className="code-class">\</span><br />
               {'  '}-p 8080:8080 -p 7000:7000 <span className="code-class">\</span><br />
-              {'  '}-e OSCILLATOR_ID=node-1 <span className="code-class">\</span><br />
+              {'  '}-e OSCILLATOR_ID=<span className="code-string">&quot;12345&quot;</span> <span className="code-class">\</span><br />
               {'  '}-e PEERS=<span className="code-string">&quot;34.56.159.76:7000&quot;</span> <span className="code-class">\</span><br />
+              {'  '}-v <span className="code-string">&quot;$HOME/fluidic-data:/data&quot;</span> <span className="code-class">\</span><br />
               {'  '}us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node:latest<br /><br />
               <span className="code-keyword">curl</span> http://localhost:8080/api/health
             </pre>

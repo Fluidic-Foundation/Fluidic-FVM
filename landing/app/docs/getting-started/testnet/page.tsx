@@ -26,10 +26,17 @@ export default function TestnetPage() {
       </table>
 
       <h2>Join the testnet</h2>
+      <p>
+        Pick a unique numeric ID for your node. Reusing the same ID as another
+        operator makes the network slash the duplicate identity.
+      </p>
       <pre><code>{`docker run -d --name fluidic-node \\
+  --restart unless-stopped \\
   -p 8080:8080 -p 7000:7000 \\
-  -e OSCILLATOR_ID=node-1 \\
+  -e OSCILLATOR_ID=12345 \\
   -e PEERS="34.56.159.76:7000" \\
+  -e FLUIDIC_DATA_DIR=/data \\
+  -v "$HOME/fluidic-data:/data" \\
   us-central1-docker.pkg.dev/project-934c3e12-e0e7-4811-810/fluidic/mesh-node:latest`}</code></pre>
 
       <h2>Fund an EVM wallet</h2>
