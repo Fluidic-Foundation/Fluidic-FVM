@@ -37,6 +37,12 @@ struct Snapshot {
 #[derive(Serialize, Deserialize)]
 struct AccountStateSer {
     units: u128,
+    #[serde(default = "default_true")]
+    decays: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize)]
@@ -122,6 +128,7 @@ pub fn save(osc: &Oscillator, path: impl AsRef<Path>) -> Result<(), String> {
                 account_to_hex(entry.key()),
                 AccountStateSer {
                     units: entry.value().balance.units,
+                    decays: entry.value().balance.decays,
                 },
             )
         })
@@ -236,6 +243,7 @@ pub fn load(osc: &mut Oscillator, path: impl AsRef<Path>) -> Result<(), String> 
                 AccountState {
                     balance: Balance {
                         units: state.units,
+                        decays: state.decays,
                         ..Default::default()
                     },
                     ..Default::default()

@@ -219,7 +219,7 @@ The model is not Byzantine Fault Tolerant in the classical sense for arbitrary s
 
 Traditional blockchains reward block producers with issuance and fees. This creates misaligned incentives: validators are paid for including transactions, not for maintaining useful state. It also encourages fee extraction and MEV.
 
-Fluidic introduces **metabolic incentives**. Value in the system decays over time unless it is actively used or staked. Of the value that decays each tick, a fixed fraction (currently **25%**) is **permanently burned**, making the supply deflationary, and the remaining **75%** is redistributed to operators and liquidity providers who contribute to synthesis.
+Fluidic introduces **metabolic incentives**. **WAVE** value in the system decays over time unless it is actively used or staked. Metabolic decay is WAVE's native monetary policy: it applies only to WAVE balances. Foreign value held on the mesh — stablecoins such as USDC and bridged assets — is **exempt from decay** and retains its full worth. Of the WAVE value that decays each tick, a fixed fraction (currently **25%**) is **permanently burned**, making the supply deflationary, and the remaining **75%** is redistributed to operators and liquidity providers who contribute to synthesis.
 
 The formula for a balance `B` after time `t`:
 

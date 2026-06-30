@@ -24,6 +24,10 @@ pub struct Balance {
     pub domain: DomainId,
     /// Per-domain decay constant λ in basis points per tick.
     pub lambda_bp: u64,
+    /// Whether this balance is subject to metabolic decay.  Metabolic decay is
+    /// WAVE's native monetary policy, so WAVE balances decay (`true`) while
+    /// foreign value such as USDC and bridged assets are exempt (`false`).
+    pub decays: bool,
 }
 
 impl Default for Balance {
@@ -33,6 +37,7 @@ impl Default for Balance {
             last_decay_tick: 0,
             domain: DEFAULT_DEX_DOMAIN,
             lambda_bp: DEFAULT_DEX_LAMBDA_BP,
+            decays: true,
         }
     }
 }
@@ -92,6 +97,15 @@ impl WaveField {
 
     pub fn ensure_account(&self, id: AccountId) {
         self.accounts.entry(id).or_insert(AccountState::default());
+    }
+
+    /// Mark an account's balance as exempt from metabolic decay (e.g. a USDC or
+    /// bridged-asset token account).  Idempotent; creates the account if absent.
+    pub fn set_non_decaying(&self, id: AccountId) {
+        self.ensure_account(id);
+        if let Some(mut state) = self.accounts.get_mut(&id) {
+            state.balance.decays = false;
+        }
     }
 
     pub fn credit_account(&self, id: AccountId, amount: u128) {
@@ -240,6 +254,11 @@ impl WaveField {
 /// Decay a single balance in place to synthesis `tick`, returning the burned
 /// amount.  The balance's `last_decay_tick` is always advanced to `tick`.
 fn decay_balance_in_place(balance: &mut Balance, tick: u64, lambda_bp: u64) -> u128 {
+    // Foreign value (USDC, bridged assets) does not decay; only WAVE does.
+    if !balance.decays {
+        balance.last_decay_tick = tick;
+        return 0;
+    }
     let elapsed = tick.saturating_sub(balance.last_decay_tick);
     if elapsed == 0 || balance.units == 0 {
         balance.last_decay_tick = tick;
@@ -351,6 +370,28 @@ mod tests {
         let burned = field.apply_metabolic_decay(3, 100, &immune);
         let expected = decayed_balance(1_000_000, 100, 3);
         assert_eq!(field.pool_balance(pool).units, expected);
+        assert_eq!(burned, 1_000_000 - expected);
+    }
+
+    #[test]
+    fn metabolic_decay_exempts_non_decaying_balances() {
+        let mut field = WaveField::new(16);
+        let wave_id = AccountId([10u8; 32]);
+        let usdc_id = AccountId([11u8; 32]);
+        field.credit_account(wave_id, 1_000_000);
+        field.credit_account(usdc_id, 1_000_000);
+        // USDC is foreign value: exempt from decay.
+        field.set_non_decaying(usdc_id);
+
+        let immune = HashSet::new();
+        let burned = field.apply_metabolic_decay(10, 100, &immune);
+
+        // The non-decaying (USDC) balance is untouched; its clock still advances.
+        assert_eq!(field.account_balance(usdc_id).units, 1_000_000);
+        assert_eq!(field.account_balance(usdc_id).last_decay_tick, 10);
+        // Only the WAVE balance decays and accounts for all of the burn.
+        let expected = decayed_balance(1_000_000, 100, 10);
+        assert_eq!(field.account_balance(wave_id).units, expected);
         assert_eq!(burned, 1_000_000 - expected);
     }
 }

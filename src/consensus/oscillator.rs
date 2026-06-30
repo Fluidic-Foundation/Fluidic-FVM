@@ -168,6 +168,14 @@ impl Oscillator {
         field.credit_account(account, amount);
     }
 
+    /// Mark an account as holding non-WAVE value (e.g. USDC or a bridged asset)
+    /// so it is exempt from metabolic decay.  Metabolic decay is WAVE's monetary
+    /// policy; foreign value must hold its worth.
+    pub fn mark_non_decaying(&self, account: AccountId) {
+        let field = self.wave_field.lock().unwrap();
+        field.set_non_decaying(account);
+    }
+
     /// Ingest a single phase-shift. Deduplicates and queues for the next
     /// synthesis cycle.
     pub fn ingest(&self, shift: Signal) -> Result<(), String> {
@@ -277,6 +285,8 @@ impl Oscillator {
         field.ensure_account(reg.account);
         field.ensure_account(reg.wave_account);
         field.ensure_account(reg.usdc_account);
+        // USDC is foreign value and must not metabolically decay.
+        field.set_non_decaying(reg.usdc_account);
         if field.account_balance(reg.wave_account).units == 0 {
             field.credit_account(reg.wave_account, 10_000_000_000_000);
         }

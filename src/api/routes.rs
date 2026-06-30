@@ -268,6 +268,8 @@ async fn register_account(
     let (wave_acc, usdc_acc) = state.token_accounts(account);
     state.oscillator.seed_account(wave_acc, 1_000_000_000_000_000); // 1,000 WAVE
     state.oscillator.seed_account(usdc_acc, 1_000_000_000_000_000); // 1,000 USDC
+    // USDC is foreign value and is exempt from metabolic decay.
+    state.oscillator.mark_non_decaying(usdc_acc);
 
     // Register derived token accounts so they can sign stateful shifts.
     state.register_key(wave_acc, vk);
