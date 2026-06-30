@@ -20,7 +20,8 @@ pub const DEFAULT_DEX_LAMBDA_PPM: u64 = 20;
 
 /// Number of ticks of activity grace: an account that transacted within this
 /// many ticks of the current synthesis tick is exempt from metabolic decay.
-pub const METABOLIC_IDLE_GRACE_TICKS: u64 = 300;
+/// At ~1 tick/second this is a ~4 hour window.
+pub const METABOLIC_IDLE_GRACE_TICKS: u64 = 4 * 60 * 60;
 
 /// Fraction of each tick's metabolically-decayed value that is *permanently
 /// burned* (removed from supply) rather than redistributed.  Expressed in basis

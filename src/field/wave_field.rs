@@ -316,6 +316,7 @@ fn field_to_signed(x: u64) -> i128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::metabolic::METABOLIC_IDLE_GRACE_TICKS;
 
     #[test]
     fn wave_field_account_debit() {
@@ -437,9 +438,9 @@ mod tests {
         assert_eq!(field.account_balance(id).last_decay_tick, 7);
 
         // Beyond the grace window the balance decays from where the clock left
-        // off (tick 7 -> tick 306, i.e. 299 ticks).
-        let burned2 = field.apply_metabolic_decay(5 + 301, 10_000, &immune);
-        let expected = decayed_balance(initial, 10_000, (5 + 301) - 7);
+        // off (tick 7 -> tick 4*60*60 + 7 + 1, i.e. 4h + 1 ticks later).
+        let burned2 = field.apply_metabolic_decay(5 + METABOLIC_IDLE_GRACE_TICKS + 1, 10_000, &immune);
+        let expected = decayed_balance(initial, 10_000, (5 + METABOLIC_IDLE_GRACE_TICKS + 1) - 7);
         assert_eq!(field.account_balance(id).units, expected);
         assert!(expected < initial);
         assert_eq!(burned2, initial - expected);
