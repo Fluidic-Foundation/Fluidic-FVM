@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { accountHref, domainHref, txHref } from "./lib";
 import {
   Activity,
   AlertCircle,
@@ -80,6 +81,7 @@ interface TickResponse extends RecentTick {}
 
 const nav = [
   { label: "Dashboard", href: "/explorer" },
+  { label: "Domains", href: "/explorer/domain/" },
   { label: "Ticks", href: "#ticks" },
   { label: "Transactions", href: "#txs" },
   { label: "Validators", href: "#validators" },
@@ -302,6 +304,11 @@ export default function ExplorerPage() {
                 <KV label="Tick" value={searchResult.data.synthesis_tick} />
                 <KV label="Confirmations" value={searchResult.data.confirmations} />
                 {searchResult.data.error && <div className="col-span-full text-red-400">{searchResult.data.error}</div>}
+                <div className="col-span-full">
+                  <Link href={txHref(searchResult.data.hash)} className="text-xs font-medium text-[#00d1a7] hover:underline">
+                    Open shift page →
+                  </Link>
+                </div>
               </div>
             ) : searchResult.type === "tick" && searchResult.data ? (
               <div className="grid gap-2 text-sm md:grid-cols-4">
@@ -309,6 +316,7 @@ export default function ExplorerPage() {
                 <KV label="Hash" value={shortHash(searchResult.data.hash)} full={searchResult.data.hash} />
                 <KV label="Status" value={<StatusBadge status={searchResult.data.finalized ? "finalized" : "accepted"} />} />
                 <KV label="Shifts" value={searchResult.data.commutative_applied + searchResult.data.stateful_applied + searchResult.data.evm_applied} />
+                <KV label="Operator" value={shortHash(searchResult.data.operator)} full={searchResult.data.operator} />
               </div>
             ) : searchResult.type === "account" && searchResult.data ? (
               <div className="grid gap-2 text-sm md:grid-cols-4">
@@ -316,6 +324,11 @@ export default function ExplorerPage() {
                 <KV label="WAVE balance" value={formatAmount(searchResult.data.wave)} full={searchResult.data.wave} />
                 <KV label="USDC balance" value={formatAmount(searchResult.data.usdc)} full={searchResult.data.usdc} />
                 {searchResult.data.shift && <KV label="Shift status" value={<StatusBadge status={searchResult.data.shift.status} />} />}
+                <div className="col-span-full">
+                  <Link href={accountHref(searchResult.data.account)} className="text-xs font-medium text-[#00d1a7] hover:underline">
+                    Open wallet page →
+                  </Link>
+                </div>
               </div>
             ) : (
               <div className="text-sm text-slate-500">Not found.</div>
@@ -364,7 +377,7 @@ export default function ExplorerPage() {
                       <tr key={i} className="cursor-pointer transition-colors hover:bg-white/[0.02]" onClick={() => setSelectedShift(s)}>
                         <td className="px-4 py-3 font-mono text-xs text-[#00d1a7]">
                           <div className="flex items-center gap-2">
-                            <Link href={`/explorer?shift=${s.hash}`} className="hover:underline">
+                            <Link href={txHref(s.hash)} className="hover:underline" onClick={(e) => e.stopPropagation()}>
                               {shortHash(s.hash)}
                             </Link>
                             <CopyButton text={s.hash} />
@@ -374,9 +387,27 @@ export default function ExplorerPage() {
                           <TypeBadge kind={s.kind} />
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-slate-400">
-                          {s.from ? shortHash(s.from) : s.domain ? shortHash(s.domain) : "—"}
+                          {s.from ? (
+                            <Link href={accountHref(s.from)} className="hover:text-[#00d1a7]" onClick={(e) => e.stopPropagation()}>
+                              {shortHash(s.from)}
+                            </Link>
+                          ) : s.domain ? (
+                            <Link href={domainHref(s.domain)} className="hover:text-[#00d1a7]" onClick={(e) => e.stopPropagation()}>
+                              {shortHash(s.domain)}
+                            </Link>
+                          ) : (
+                            "—"
+                          )}
                         </td>
-                        <td className="px-4 py-3 font-mono text-xs text-slate-400">{s.to ? shortHash(s.to) : "—"}</td>
+                        <td className="px-4 py-3 font-mono text-xs text-slate-400">
+                          {s.to ? (
+                            <Link href={accountHref(s.to)} className="hover:text-[#00d1a7]" onClick={(e) => e.stopPropagation()}>
+                              {shortHash(s.to)}
+                            </Link>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-right font-mono text-xs text-slate-300" title={s.amount ? `${s.amount} ${s.token || ""}` : undefined}>
                           {s.amount ? (
                             <span className="inline-flex items-baseline gap-1.5">
@@ -469,7 +500,11 @@ export default function ExplorerPage() {
                 <div className="px-4 py-6 text-center text-sm text-slate-500">No validators online.</div>
               ) : (
                 operators.slice(0, 8).map((o, i) => (
-                  <div key={i} className="flex items-center justify-between px-4 py-2.5 transition-colors hover:bg-white/[0.02]">
+                  <Link
+                    key={i}
+                    href={accountHref(o.account)}
+                    className="flex items-center justify-between px-4 py-2.5 transition-colors hover:bg-white/[0.02]"
+                  >
                     <div className="flex items-center gap-2">
                       <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/5 text-[10px] text-slate-400">
                         {i + 1}
@@ -477,7 +512,7 @@ export default function ExplorerPage() {
                       <span className="font-mono text-xs text-slate-300">{shortHash(o.account)}</span>
                     </div>
                     <span className="font-mono text-xs text-slate-500" title={o.stake}>{formatAmount(o.stake)}</span>
-                  </div>
+                  </Link>
                 ))
               )}
             </div>
@@ -518,6 +553,26 @@ export default function ExplorerPage() {
               <KV label="From" value={selectedShift.from ? shortHash(selectedShift.from) : "—"} full={selectedShift.from} />
               <KV label="To" value={selectedShift.to ? shortHash(selectedShift.to) : "—"} full={selectedShift.to} />
               <KV label="Timestamp" value={selectedShift.timestamp_ns ? new Date(selectedShift.timestamp_ns / 1_000_000).toLocaleString() : "—"} />
+            </div>
+            <div className="mt-5 flex flex-wrap gap-4 border-t border-white/[0.06] pt-4 text-xs">
+              <Link href={txHref(selectedShift.hash)} className="font-medium text-[#00d1a7] hover:underline">
+                Open shift page →
+              </Link>
+              {selectedShift.from && (
+                <Link href={accountHref(selectedShift.from)} className="font-medium text-slate-400 hover:text-white">
+                  Sender wallet →
+                </Link>
+              )}
+              {selectedShift.to && (
+                <Link href={accountHref(selectedShift.to)} className="font-medium text-slate-400 hover:text-white">
+                  Recipient wallet →
+                </Link>
+              )}
+              {selectedShift.domain && (
+                <Link href={domainHref(selectedShift.domain)} className="font-medium text-slate-400 hover:text-white">
+                  Domain →
+                </Link>
+              )}
             </div>
           </div>
         </div>
