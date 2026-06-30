@@ -3,8 +3,9 @@ use fluidic::consensus::Oscillator;
 use fluidic::crypto::keys::KeyPair;
 use fluidic::crypto::{AccountId, CommutativeShift, Signal, StatefulShift, VectorClock, DEFAULT_DEX_DOMAIN};
 use fluidic::field::coordinates::Coordinate;
-use fluidic::value::metabolic::{MetabolicDecayEngine, MetabolicStream};
+use fluidic::value::metabolic::{DEFAULT_DEX_LAMBDA_BP, MetabolicDecayEngine, MetabolicStream};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 const COMMUTATIVE_WORKLOAD: usize = 10_000;
@@ -15,7 +16,7 @@ fn seed_streams(engine: &MetabolicDecayEngine, count: usize) {
     for i in 0..count {
         let mut id = [0u8; 32];
         id[0..8].copy_from_slice(&(i as u64).to_le_bytes());
-        let stream = MetabolicStream::new(id, owner, 1_000_000_000_000, u128::MAX / 4);
+        let stream = MetabolicStream::new(id, owner, 1_000_000_000_000, DEFAULT_DEX_LAMBDA_BP);
         engine.add_stream(stream);
     }
 }
@@ -95,8 +96,10 @@ fn bench_metabolic_decay(c: &mut Criterion) {
             |b, &count| {
                 let engine = MetabolicDecayEngine::new();
                 seed_streams(&engine, count);
+                let tick = AtomicU64::new(1);
                 b.iter(|| {
-                    let burned = engine.process_metabolic_degradation();
+                    let t = tick.fetch_add(1, Ordering::Relaxed);
+                    let burned = engine.process_metabolic_degradation(t);
                     black_box(burned);
                 });
             },

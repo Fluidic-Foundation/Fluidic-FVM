@@ -73,7 +73,7 @@ fn create_oscillator(stream_count: usize, keypairs: &[KeyPair]) -> Oscillator {
             id,
             owner,
             1_000_000_000_000,
-            u128::MAX / 4,
+            fluidic::value::metabolic::DEFAULT_DEX_LAMBDA_BP,
         ));
     }
     osc

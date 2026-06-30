@@ -51,6 +51,8 @@ struct DagNodeSer {
     first_seen_at_ns: u64,
     #[serde(default)]
     finalized_at_tick: Option<u64>,
+    #[serde(default)]
+    applied: bool,
     status: String,
     error: Option<String>,
 }
@@ -142,6 +144,7 @@ pub fn save(osc: &Oscillator, path: impl AsRef<Path>) -> Result<(), String> {
             finalization_depth: node.finalization_depth,
             first_seen_at_ns: node.first_seen_at_ns,
             finalized_at_tick: node.finalized_at_tick,
+            applied: node.applied,
             status: match node.status {
                 ShiftStatus::Accepted => "accepted".to_string(),
                 ShiftStatus::Finalized => "finalized".to_string(),
@@ -231,7 +234,10 @@ pub fn load(osc: &mut Oscillator, path: impl AsRef<Path>) -> Result<(), String> 
             wave.accounts.insert(
                 id,
                 AccountState {
-                    balance: Balance { units: state.units },
+                    balance: Balance {
+                        units: state.units,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             );
@@ -241,7 +247,13 @@ pub fn load(osc: &mut Oscillator, path: impl AsRef<Path>) -> Result<(), String> 
     wave.pools.clear();
     for (hex, units) in snapshot.pools {
         if let Some(id) = pool_from_hex(&hex) {
-            wave.pools.insert(id, Balance { units });
+            wave.pools.insert(
+                id,
+                Balance {
+                    units,
+                    ..Default::default()
+                },
+            );
         }
     }
 
@@ -264,6 +276,7 @@ pub fn load(osc: &mut Oscillator, path: impl AsRef<Path>) -> Result<(), String> 
                     finalization_depth: node.finalization_depth,
                     first_seen_at_ns: node.first_seen_at_ns,
                     finalized_at_tick: node.finalized_at_tick,
+                    applied: node.applied,
                     status: parse_status(&node.status, &node.error),
                 },
             );

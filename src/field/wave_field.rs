@@ -1,25 +1,51 @@
 use crate::consensus::ntt::{NTT_MODULUS, NttEngine};
-use crate::crypto::{AccountId, PoolId};
+use crate::crypto::{AccountId, DEFAULT_DEX_DOMAIN, DomainId, PoolId};
 use crate::field::coordinates::{Coordinate, FrequencyVector};
+use crate::value::metabolic::{DEFAULT_DEX_LAMBDA_BP, decayed_balance};
 use dashmap::DashMap;
+use std::collections::HashSet;
 
 /// Native token precision: 10^12 sub-units per WAVE.
 pub const WAVE_PRECISION: u128 = 1_000_000_000_000;
 
 /// Fixed-point balance for an account or pool.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// Each balance carries the metabolic-decay bookkeeping needed to apply
+/// `B(t) = B(0) * e^(-λt)` lazily: `last_decay_tick` records the synthesis tick
+/// the value was last decayed to, and `domain`/`lambda_bp` identify which
+/// domain's decay constant governs it.  For now every balance is tracked under
+/// the DEX domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Balance {
     pub units: u128,
+    /// Synthesis tick this balance was last decayed to.
+    pub last_decay_tick: u64,
+    /// Concurrency domain governing this balance's decay constant.
+    pub domain: DomainId,
+    /// Per-domain decay constant λ in basis points per tick.
+    pub lambda_bp: u64,
+}
+
+impl Default for Balance {
+    fn default() -> Self {
+        Self {
+            units: 0,
+            last_decay_tick: 0,
+            domain: DEFAULT_DEX_DOMAIN,
+            lambda_bp: DEFAULT_DEX_LAMBDA_BP,
+        }
+    }
 }
 
 impl Balance {
     pub fn zero() -> Self {
-        Self { units: 0 }
+        Self::default()
     }
 
     pub fn from_wave(wave: u128) -> Self {
         Self {
             units: wave.saturating_mul(WAVE_PRECISION),
+            ..Self::default()
         }
     }
 
@@ -174,6 +200,56 @@ impl WaveField {
         }
         Ok(())
     }
+
+    /// Apply exponential metabolic decay to every account and pool balance,
+    /// advancing each to synthesis `tick`.
+    ///
+    /// Decay follows the closed-form curve `B(t) = B(0) * (10_000 - λ)^Δ /
+    /// 10_000^Δ`, where `Δ = tick - last_decay_tick` for each balance.  Staked
+    /// operators listed in `immune_accounts` are exempt: their balances are not
+    /// decayed, but their decay clock is still advanced so a later loss of
+    /// immunity does not trigger a large catch-up burn.
+    ///
+    /// Returns the total value burned across all balances this call.
+    pub fn apply_metabolic_decay(
+        &mut self,
+        tick: u64,
+        lambda_bp: u64,
+        immune_accounts: &HashSet<AccountId>,
+    ) -> u128 {
+        let mut total_burned = 0u128;
+
+        for mut entry in self.accounts.iter_mut() {
+            if immune_accounts.contains(entry.key()) {
+                entry.value_mut().balance.last_decay_tick = tick;
+                continue;
+            }
+            let burned = decay_balance_in_place(&mut entry.value_mut().balance, tick, lambda_bp);
+            total_burned = total_burned.saturating_add(burned);
+        }
+
+        for mut entry in self.pools.iter_mut() {
+            let burned = decay_balance_in_place(entry.value_mut(), tick, lambda_bp);
+            total_burned = total_burned.saturating_add(burned);
+        }
+
+        total_burned
+    }
+}
+
+/// Decay a single balance in place to synthesis `tick`, returning the burned
+/// amount.  The balance's `last_decay_tick` is always advanced to `tick`.
+fn decay_balance_in_place(balance: &mut Balance, tick: u64, lambda_bp: u64) -> u128 {
+    let elapsed = tick.saturating_sub(balance.last_decay_tick);
+    if elapsed == 0 || balance.units == 0 {
+        balance.last_decay_tick = tick;
+        return 0;
+    }
+    let remaining = decayed_balance(balance.units, lambda_bp, elapsed);
+    let burned = balance.units.saturating_sub(remaining);
+    balance.units = remaining;
+    balance.last_decay_tick = tick;
+    burned
 }
 
 /// Convert signed i128 delta into a canonical field representative.
@@ -217,5 +293,64 @@ mod tests {
             .collect();
         field.synthesize_commutative_batch(&deltas).unwrap();
         assert_eq!(field.pool_balance(pool).units, 32 * 100);
+    }
+
+    #[test]
+    fn metabolic_decay_follows_exponential_formula() {
+        let mut field = WaveField::new(16);
+        let id = AccountId([5u8; 32]);
+        let initial = 1_000_000_000_000u128; // 1 WAVE
+        field.credit_account(id, initial);
+
+        let lambda_bp = 100; // 1% per tick
+        let n = 5u64;
+        let immune = HashSet::new();
+        let burned = field.apply_metabolic_decay(n, lambda_bp, &immune);
+
+        // The remaining balance must equal the closed-form exponential curve.
+        let expected_remaining = decayed_balance(initial, lambda_bp, n);
+        assert_eq!(field.account_balance(id).units, expected_remaining);
+        assert_eq!(burned, initial - expected_remaining);
+        assert_eq!(field.account_balance(id).last_decay_tick, n);
+
+        // A second decay continues the curve from where it left off.
+        let burned2 = field.apply_metabolic_decay(n + 1, lambda_bp, &immune);
+        let expected2 = decayed_balance(expected_remaining, lambda_bp, 1);
+        assert_eq!(field.account_balance(id).units, expected2);
+        assert_eq!(burned2, expected_remaining - expected2);
+    }
+
+    #[test]
+    fn metabolic_decay_skips_immune_accounts() {
+        let mut field = WaveField::new(16);
+        let immune_id = AccountId([6u8; 32]);
+        let normal_id = AccountId([7u8; 32]);
+        field.credit_account(immune_id, 1_000_000);
+        field.credit_account(normal_id, 1_000_000);
+
+        let mut immune = HashSet::new();
+        immune.insert(immune_id);
+        let burned = field.apply_metabolic_decay(10, 100, &immune);
+
+        // Immune balance untouched, but its decay clock still advances.
+        assert_eq!(field.account_balance(immune_id).units, 1_000_000);
+        assert_eq!(field.account_balance(immune_id).last_decay_tick, 10);
+        // Normal balance decays and accounts for all of the burn.
+        let expected = decayed_balance(1_000_000, 100, 10);
+        assert_eq!(field.account_balance(normal_id).units, expected);
+        assert_eq!(burned, 1_000_000 - expected);
+    }
+
+    #[test]
+    fn metabolic_decay_also_decays_pool_balances() {
+        let mut field = WaveField::new(16);
+        let pool = [8u8; 32];
+        field.apply_commutative_delta(pool, 1_000_000).unwrap();
+
+        let immune = HashSet::new();
+        let burned = field.apply_metabolic_decay(3, 100, &immune);
+        let expected = decayed_balance(1_000_000, 100, 3);
+        assert_eq!(field.pool_balance(pool).units, expected);
+        assert_eq!(burned, 1_000_000 - expected);
     }
 }

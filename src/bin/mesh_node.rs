@@ -120,7 +120,18 @@ async fn main() {
     {
         oscillator.seed_account(local_account, genesis_balance);
     }
-    oscillator.stake_table.stake(local_account, genesis_balance);
+    let genesis_stake = StakeShift::sign(
+        &local_keypair,
+        genesis_balance,
+        0,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0),
+    );
+    if !oscillator.apply_stake(&genesis_stake) {
+        warn!("failed to lock genesis stake for {}", local_account);
+    }
 
     let api_state = Arc::new(ApiState::new(oscillator.clone()));
     api_state.set_operator_keypair(local_keypair.clone());

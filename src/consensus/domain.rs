@@ -10,6 +10,17 @@ pub enum OrderingMode {
     Fifo,
 }
 
+/// How a concurrency domain charges for execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeePolicy {
+    /// A flat fee in sub-units per signal.
+    Flat(u128),
+    /// A percentage fee in basis points of the transacted amount.
+    Percentage(u64),
+    /// No explicit fee; economic pressure comes solely from metabolic decay.
+    MetabolicOnly,
+}
+
 /// A policy governing one concurrency domain.
 ///
 /// Domains isolate namespaces of execution: a domain may permit commutative
@@ -22,11 +33,19 @@ pub struct DomainPolicy {
     pub stateful: bool,
     pub ordering: OrderingMode,
     pub finalization_depth: u64,
+    /// Exponential metabolic decay constant λ for this domain, in basis points
+    /// per synthesis tick.  Each tick a balance retains `(10_000 - λ)/10_000`
+    /// of its value, so `B(t) = B(0) * ((10_000 - λ)/10_000)^t`.  Must be
+    /// strictly less than 10_000.
+    pub metabolic_lambda_bp: u64,
+    /// How this domain charges fees for execution.
+    pub fee_policy: FeePolicy,
 }
 
 impl DomainPolicy {
-    /// The built-in DEX domain: both commutative and stateful signals,
-    /// DAG ordering, and a conservative finalization depth.
+    /// The built-in DEX domain: both commutative and stateful signals, DAG
+    /// ordering, a conservative finalization depth, the default DEX decay
+    /// constant (λ = 1 bp/tick), and no explicit fee beyond metabolic decay.
     pub fn dex_default() -> Self {
         Self {
             domain: DEFAULT_DEX_DOMAIN,
@@ -34,7 +53,16 @@ impl DomainPolicy {
             stateful: true,
             ordering: OrderingMode::Dag,
             finalization_depth: 3,
+            metabolic_lambda_bp: crate::value::metabolic::DEFAULT_DEX_LAMBDA_BP,
+            fee_policy: FeePolicy::MetabolicOnly,
         }
+    }
+
+    /// Convenience builder for domains that want a different metabolic decay
+    /// constant λ (in basis points per tick).
+    pub fn with_metabolic_lambda(mut self, lambda_bp: u64) -> Self {
+        self.metabolic_lambda_bp = lambda_bp;
+        self
     }
 }
 
@@ -64,6 +92,13 @@ impl DomainRegistry {
     pub fn contains(&self, domain: &DomainId) -> bool {
         self.domains.contains_key(domain)
     }
+
+    /// All registered domain policies, sorted by domain id for stable output.
+    pub fn all(&self) -> Vec<DomainPolicy> {
+        let mut policies: Vec<DomainPolicy> = self.domains.values().cloned().collect();
+        policies.sort_by(|a, b| a.domain.cmp(&b.domain));
+        policies
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +113,10 @@ mod tests {
         assert!(policy.stateful);
         assert_eq!(policy.ordering, OrderingMode::Dag);
         assert_eq!(policy.finalization_depth, 3);
+        assert_eq!(
+            policy.metabolic_lambda_bp,
+            crate::value::metabolic::DEFAULT_DEX_LAMBDA_BP
+        );
+        assert_eq!(policy.fee_policy, FeePolicy::MetabolicOnly);
     }
 }
