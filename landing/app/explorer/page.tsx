@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { accountHref, domainHref, txHref } from "./lib";
+import { accountHref, domainHref, txHref, formatToken } from "./lib";
 import {
   Activity,
   AlertCircle,
@@ -12,6 +12,7 @@ import {
   Copy,
   Cpu,
   ExternalLink,
+  Flame,
   Globe,
   Layers,
   Loader2,
@@ -39,6 +40,13 @@ interface StateResponse {
   evm_applied: number;
   pool_wave_account: string;
   pool_usdc_account: string;
+}
+
+interface SupplyResponse {
+  total: string;
+  circulating: string;
+  burned: string;
+  remaining: string;
 }
 
 interface RecentShift {
@@ -90,6 +98,7 @@ const nav = [
 
 export default function ExplorerPage() {
   const [state, setState] = useState<StateResponse | null>(null);
+  const [supply, setSupply] = useState<SupplyResponse | null>(null);
   const [shifts, setShifts] = useState<RecentShift[]>([]);
   const [ticks, setTicks] = useState<RecentTick[]>([]);
   const [operators, setOperators] = useState<OperatorInfo[]>([]);
@@ -106,11 +115,12 @@ export default function ExplorerPage() {
 
   const fetchAll = async () => {
     try {
-      const [stateRes, shiftsRes, ticksRes, opsRes] = await Promise.all([
+      const [stateRes, shiftsRes, ticksRes, opsRes, supplyRes] = await Promise.all([
         fetch(`${API_BASE}/api/state`),
         fetch(`${API_BASE}/api/shifts/recent?limit=25`),
         fetch(`${API_BASE}/api/ticks/recent?limit=12`),
         fetch(`${API_BASE}/api/operators`),
+        fetch(`${API_BASE}/api/supply`),
       ]);
       if (!stateRes.ok || !shiftsRes.ok || !ticksRes.ok || !opsRes.ok) throw new Error("api");
       const [stateJson, shiftsJson, ticksJson, opsJson] = await Promise.all([
@@ -123,6 +133,7 @@ export default function ExplorerPage() {
       setShifts(shiftsJson.shifts || []);
       setTicks(ticksJson.ticks || []);
       setOperators(opsJson.operators || []);
+      if (supplyRes.ok) setSupply(await supplyRes.json());
       setError(null);
     } catch (e) {
       setError("Cannot reach the Fluidic mesh. The testnet API may be restarting.");
@@ -276,7 +287,7 @@ export default function ExplorerPage() {
 
       {/* Stats strip */}
       <section className="mx-auto max-w-[1500px] px-4 py-4">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-8">
           <Stat label="Latest tick" value={latestTick ? `#${latestTick.toLocaleString()}` : "—"} icon={Zap} />
           <Stat label="Finalized" value={finalizedTick ? `#${finalizedTick.toLocaleString()}` : "—"} icon={CheckCircle2} />
           <Stat label="Total shifts" value={totalShifts ? totalShifts.toLocaleString() : "—"} icon={Layers} />
@@ -284,6 +295,12 @@ export default function ExplorerPage() {
           <Stat label="Validators" value={operators.length ? operators.length.toString() : "—"} icon={Shield} />
           <Stat label="Throughput" value={state ? `${state.throughput.toFixed(1)}/s` : "—"} icon={Zap} />
           <Stat label="Latency" value={state ? `${state.latency_ms.toFixed(0)}ms` : "—"} icon={Cpu} />
+          <Stat
+            label="Burned WAVE"
+            value={supply ? formatToken(supply.burned) : "—"}
+            icon={Flame}
+            title={supply ? `${supply.burned} sub-units · 25% of metabolic decay` : undefined}
+          />
         </div>
       </section>
 
@@ -595,9 +612,9 @@ export default function ExplorerPage() {
   );
 }
 
-function Stat({ label, value, icon: Icon }: { label: string; value: string; icon: any }) {
+function Stat({ label, value, icon: Icon, title }: { label: string; value: string; icon: any; title?: string }) {
   return (
-    <div className="rounded-lg border border-white/[0.06] bg-[#11161c] px-3 py-2.5">
+    <div className="rounded-lg border border-white/[0.06] bg-[#11161c] px-3 py-2.5" title={title}>
       <div className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">{label}</div>
       <div className="flex items-center gap-2">
         <Icon className="h-3.5 w-3.5 text-slate-500" />

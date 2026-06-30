@@ -15,7 +15,7 @@ export default function SynthesisTicksPage() {
         Each node runs an <strong>Oscillator</strong>. Every <code>SYNTHESIS_INTERVAL_MS</code> it:
       </p>
       <ol>
-        <li>Applies metabolic burn and distributes rewards.</li>
+        <li>Applies metabolic decay: burns a fixed share (25%) and distributes the rest as rewards.</li>
         <li>Moves pending stateful shifts into the DAG and detects double-spends.</li>
         <li>Promotes accepted shifts to finalized after a confirmation depth.</li>
         <li>Batches commutative deltas through an NTT window.</li>

@@ -13,6 +13,12 @@ pub const BASIS_POINTS_DENOMINATOR: u64 = 10_000;
 /// decays away per tick.
 pub const DEFAULT_DEX_LAMBDA_BP: u64 = 1;
 
+/// Fraction of each tick's metabolically-decayed value that is *permanently
+/// burned* (removed from supply) rather than redistributed.  Expressed in basis
+/// points.  `2_500` = 25%: a quarter of decay is a deflationary sink, the
+/// remaining 75% is redistributed to operators and liquidity providers.
+pub const METABOLIC_BURN_BP: u64 = 2_500;
+
 /// Integer exponentiation by squaring for `u128`.
 ///
 /// Uses `saturating_mul` so the result is always defined and identical across
@@ -193,6 +199,28 @@ mod tests {
         assert_eq!(decayed_balance(initial, 100, 2), 980_100);
         // 1_000_000 * 9_900^3 / 10_000^3
         assert_eq!(decayed_balance(initial, 100, 3), 970_299);
+    }
+
+    #[test]
+    fn metabolic_burn_split_is_deterministic_25_75() {
+        // Helper mirrors the integer split applied in the synthesis loop.
+        let split = |decayed: u128| -> (u128, u128) {
+            let burn = decayed.saturating_mul(METABOLIC_BURN_BP as u128)
+                / BASIS_POINTS_DENOMINATOR as u128;
+            (burn, decayed - burn)
+        };
+        // Exact quarter.
+        assert_eq!(split(1_000_000), (250_000, 750_000));
+        // Rounding always favors the reward share; nothing is lost.
+        let (burn, reward) = split(3);
+        assert_eq!(burn, 0); // 3 * 2500 / 10000 = 0
+        assert_eq!(burn + reward, 3);
+        let (burn, reward) = split(4);
+        assert_eq!(burn, 1); // 4 * 2500 / 10000 = 1
+        assert_eq!(burn + reward, 4);
+        // Conservation for an arbitrary value.
+        let (burn, reward) = split(987_654_321);
+        assert_eq!(burn + reward, 987_654_321);
     }
 
     #[test]

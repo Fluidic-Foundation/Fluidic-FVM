@@ -219,7 +219,7 @@ The model is not Byzantine Fault Tolerant in the classical sense for arbitrary s
 
 Traditional blockchains reward block producers with issuance and fees. This creates misaligned incentives: validators are paid for including transactions, not for maintaining useful state. It also encourages fee extraction and MEV.
 
-Fluidic introduces **metabolic incentives**. Value in the system decays over time unless it is actively used or staked. This decay is redistributed to operators and liquidity providers who contribute to synthesis.
+Fluidic introduces **metabolic incentives**. Value in the system decays over time unless it is actively used or staked. Of the value that decays each tick, a fixed fraction (currently **25%**) is **permanently burned**, making the supply deflationary, and the remaining **75%** is redistributed to operators and liquidity providers who contribute to synthesis.
 
 The formula for a balance `B` after time `t`:
 
@@ -229,11 +229,12 @@ B(t) = B(0) * e^(-λt)
 
 Where `λ` is the metabolic decay rate, set per domain.
 
-This design has three effects:
+This design has four effects:
 
 1. **Penalizes passivity.** Capital must work to maintain its value.
-2. **Funds synthesis.** Decayed value becomes operator revenue without inflating supply.
-3. **Reduces spam.** Empty accounts and unused state naturally evaporate.
+2. **Funds synthesis.** The redistributed share becomes operator and LP revenue without inflating supply.
+3. **Deflationary sink.** The burned share permanently reduces circulating supply, supporting scarcity alongside the fixed cap and slash burns.
+4. **Reduces spam.** Empty accounts and unused state naturally evaporate.
 
 ---
 
@@ -245,7 +246,7 @@ The native token is **WAVE**.
 
 - **Staking** by operators.
 - **Domain fees** paid by dApps to reserve concurrency domains.
-- **Metabolic redistribution** to active participants.
+- **Metabolic redistribution** to active participants (75% of decay), with the remaining 25% burned.
 - **Bridge bonds** locked by external-system connectors.
 
 ### 11.2 Issuance

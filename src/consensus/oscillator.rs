@@ -357,8 +357,10 @@ impl Oscillator {
 
         // 0. Metabolic decay: exponentially decay every wave-field balance by
         //    B(t) = B(0) * e^(-λt), using the DEX domain's λ.  Staked operators
-        //    are immune (their locked balances back the network).  The burned
-        //    value is split between operators and liquidity providers below.
+        //    are immune (their locked balances back the network).  Of the value
+        //    that decays away, a fixed fraction (`METABOLIC_BURN_BP`) is
+        //    permanently burned and the remainder is redistributed to operators
+        //    and liquidity providers below.
         let immune_accounts: std::collections::HashSet<AccountId> = self
             .stake_table
             .staked_operators()
@@ -372,16 +374,28 @@ impl Oscillator {
             .get(&crate::crypto::DEFAULT_DEX_DOMAIN)
             .map(|p| p.metabolic_lambda_bp)
             .unwrap_or(crate::value::metabolic::DEFAULT_DEX_LAMBDA_BP);
-        result.metabolic_burned = {
+        let decayed = {
             let mut field = self.wave_field.lock().unwrap();
             field.apply_metabolic_decay(tick, dex_lambda, &immune_accounts)
         };
-        // Record the burn into the engine's running total for reporting surfaces
-        // (API / persistence) without relying on it to compute the burn.
-        self.metabolic_engine.record_burn(result.metabolic_burned);
-        {
+        result.metabolic_burned = decayed;
+        // Record the total decayed value into the engine's running total for
+        // reporting surfaces (API / persistence).
+        self.metabolic_engine.record_burn(decayed);
+
+        // Deterministic integer split: burn a fixed fraction, redistribute the
+        // rest.  The remainder (and any rounding) always goes to rewards so no
+        // value is lost and every honest node computes the same partition.
+        let burn_share = decayed
+            .saturating_mul(crate::value::metabolic::METABOLIC_BURN_BP as u128)
+            / crate::value::metabolic::BASIS_POINTS_DENOMINATOR as u128;
+        let reward_share = decayed - burn_share;
+        if burn_share > 0 {
+            self.supply_tracker.burn(burn_share);
+        }
+        if reward_share > 0 {
             let reward_pool = self.reward_pool.read().unwrap();
-            reward_pool.distribute(result.metabolic_burned, &self.stake_table);
+            reward_pool.distribute(reward_share, &self.stake_table);
         }
 
         // 0b. Sync decayed wave-field balances into the DAG so that stateful

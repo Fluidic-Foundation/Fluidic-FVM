@@ -21,7 +21,7 @@ export default function ConsensusStakingPage() {
 
       <h2>Rewards</h2>
       <p>
-        Every synthesis tick applies metabolic burn. The burned amount is distributed to staked operators proportional to their stake. Operator rewards accrue in the reward pool and can be claimed via the stake table.
+        Every synthesis tick applies metabolic decay. Of the decayed value, a fixed share (25%) is permanently burned — reducing circulating supply — and the remaining 75% is distributed to staked operators proportional to their stake and to the liquidity-provider reward pool. Operator rewards accrue in the reward pool and can be claimed via the stake table.
       </p>
 
       <h2>Quorum & finality</h2>
