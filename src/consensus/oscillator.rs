@@ -549,9 +549,13 @@ impl Oscillator {
             result.stateful_applied += 1;
             stateful_hashes.push(hash);
             // Record both parties as active so they receive metabolic-decay
-            // grace starting next tick.
-            active_accounts.insert(shift.from);
-            active_accounts.insert(shift.to);
+            // grace starting next tick.  Self-transfers do not count as real
+            // economic activity, otherwise a whale could bypass decay for free by
+            // scripting transfers to themselves.
+            if shift.from != shift.to {
+                active_accounts.insert(shift.from);
+                active_accounts.insert(shift.to);
+            }
         }
         drop(dag);
 
