@@ -3,7 +3,7 @@ use fluidic::consensus::Oscillator;
 use fluidic::crypto::keys::KeyPair;
 use fluidic::crypto::{AccountId, CommutativeShift, Signal, StatefulShift, VectorClock, DEFAULT_DEX_DOMAIN};
 use fluidic::field::coordinates::Coordinate;
-use fluidic::value::metabolic::{DEFAULT_DEX_LAMBDA_BP, MetabolicDecayEngine, MetabolicStream};
+use fluidic::value::metabolic::{DEFAULT_DEX_LAMBDA_PPM, MetabolicDecayEngine, MetabolicStream};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -16,7 +16,7 @@ fn seed_streams(engine: &MetabolicDecayEngine, count: usize) {
     for i in 0..count {
         let mut id = [0u8; 32];
         id[0..8].copy_from_slice(&(i as u64).to_le_bytes());
-        let stream = MetabolicStream::new(id, owner, 1_000_000_000_000, DEFAULT_DEX_LAMBDA_BP);
+        let stream = MetabolicStream::new(id, owner, 1_000_000_000_000, DEFAULT_DEX_LAMBDA_PPM);
         engine.add_stream(stream);
     }
 }

@@ -33,11 +33,12 @@ pub struct DomainPolicy {
     pub stateful: bool,
     pub ordering: OrderingMode,
     pub finalization_depth: u64,
-    /// Exponential metabolic decay constant λ for this domain, in basis points
-    /// per synthesis tick.  Each tick a balance retains `(10_000 - λ)/10_000`
-    /// of its value, so `B(t) = B(0) * ((10_000 - λ)/10_000)^t`.  Must be
-    /// strictly less than 10_000.
-    pub metabolic_lambda_bp: u64,
+    /// Exponential metabolic decay constant λ for this domain, in parts-per-
+    /// million per synthesis tick.  Each tick a balance retains
+    /// `(1_000_000 - λ)/1_000_000` of its value, so
+    /// `B(t) = B(0) * ((1_000_000 - λ)/1_000_000)^t`.  Must be strictly less
+    /// than 1_000_000.
+    pub metabolic_lambda_ppm: u64,
     /// How this domain charges fees for execution.
     pub fee_policy: FeePolicy,
 }
@@ -45,7 +46,7 @@ pub struct DomainPolicy {
 impl DomainPolicy {
     /// The built-in DEX domain: both commutative and stateful signals, DAG
     /// ordering, a conservative finalization depth, the default DEX decay
-    /// constant (λ = 1 bp/tick), and no explicit fee beyond metabolic decay.
+    /// constant (λ = 20 ppm/tick), and no explicit fee beyond metabolic decay.
     pub fn dex_default() -> Self {
         Self {
             domain: DEFAULT_DEX_DOMAIN,
@@ -53,15 +54,15 @@ impl DomainPolicy {
             stateful: true,
             ordering: OrderingMode::Dag,
             finalization_depth: 3,
-            metabolic_lambda_bp: crate::value::metabolic::DEFAULT_DEX_LAMBDA_BP,
+            metabolic_lambda_ppm: crate::value::metabolic::DEFAULT_DEX_LAMBDA_PPM,
             fee_policy: FeePolicy::MetabolicOnly,
         }
     }
 
     /// Convenience builder for domains that want a different metabolic decay
-    /// constant λ (in basis points per tick).
-    pub fn with_metabolic_lambda(mut self, lambda_bp: u64) -> Self {
-        self.metabolic_lambda_bp = lambda_bp;
+    /// constant λ (in parts-per-million per tick).
+    pub fn with_metabolic_lambda(mut self, rate_ppm: u64) -> Self {
+        self.metabolic_lambda_ppm = rate_ppm;
         self
     }
 }
@@ -114,8 +115,8 @@ mod tests {
         assert_eq!(policy.ordering, OrderingMode::Dag);
         assert_eq!(policy.finalization_depth, 3);
         assert_eq!(
-            policy.metabolic_lambda_bp,
-            crate::value::metabolic::DEFAULT_DEX_LAMBDA_BP
+            policy.metabolic_lambda_ppm,
+            crate::value::metabolic::DEFAULT_DEX_LAMBDA_PPM
         );
         assert_eq!(policy.fee_policy, FeePolicy::MetabolicOnly);
     }

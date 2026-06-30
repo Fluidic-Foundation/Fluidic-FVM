@@ -39,6 +39,8 @@ struct AccountStateSer {
     units: u128,
     #[serde(default = "default_true")]
     decays: bool,
+    #[serde(default)]
+    last_active_tick: u64,
 }
 
 fn default_true() -> bool {
@@ -129,6 +131,7 @@ pub fn save(osc: &Oscillator, path: impl AsRef<Path>) -> Result<(), String> {
                 AccountStateSer {
                     units: entry.value().balance.units,
                     decays: entry.value().balance.decays,
+                    last_active_tick: entry.value().balance.last_active_tick,
                 },
             )
         })
@@ -244,6 +247,7 @@ pub fn load(osc: &mut Oscillator, path: impl AsRef<Path>) -> Result<(), String> 
                     balance: Balance {
                         units: state.units,
                         decays: state.decays,
+                        last_active_tick: state.last_active_tick,
                         ..Default::default()
                     },
                     ..Default::default()

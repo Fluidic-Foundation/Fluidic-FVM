@@ -29,7 +29,7 @@ interface Domain {
   stateful: boolean;
   ordering: string;
   finalization_depth: number;
-  metabolic_lambda_bp: number;
+  metabolic_lambda_ppm: number;
   fee_policy: FeePolicy;
   shift_count: number;
   recent_shifts?: RecentShift[];
@@ -41,13 +41,13 @@ function feeText(fp: FeePolicy): string {
   return "Metabolic only";
 }
 
-/** λ in bp/tick → effective per-tick retention and a friendly half-life. */
-function decayText(lambda_bp: number): string {
-  if (lambda_bp <= 0) return "No decay";
-  const retain = (10_000 - lambda_bp) / 10_000;
+/** λ in ppm/tick → effective per-tick retention and a friendly half-life. */
+function decayText(rate_ppm: number): string {
+  if (rate_ppm <= 0) return "No decay";
+  const retain = (1_000_000 - rate_ppm) / 1_000_000;
   // half-life in ticks: t where retain^t = 0.5
   const halfLife = Math.log(0.5) / Math.log(retain);
-  return `${lambda_bp} bp/tick · half-life ≈ ${Math.round(halfLife).toLocaleString()} ticks`;
+  return `${rate_ppm} ppm/tick · half-life ≈ ${Math.round(halfLife).toLocaleString()} ticks`;
 }
 
 function Pill({ ok, label }: { ok: boolean; label: string }) {
@@ -227,9 +227,9 @@ function DomainDetail({ id }: { id: string }) {
             <div className="flex items-center gap-2 text-sm font-semibold text-white">
               <Waves className="h-4 w-4 text-[#8b5cf6]" /> Metabolic decay
             </div>
-            <p className="mt-2 text-sm text-slate-400">{decayText(d.metabolic_lambda_bp)}</p>
+            <p className="mt-2 text-sm text-slate-400">{decayText(d.metabolic_lambda_ppm)}</p>
             <p className="mt-1 font-mono text-xs text-slate-600">
-              B(t) = B(0) · ((10000 − {d.metabolic_lambda_bp}) / 10000)^t
+              B(t) = B(0) · ((1000000 − {d.metabolic_lambda_ppm}) / 1000000)^t
             </p>
           </div>
 

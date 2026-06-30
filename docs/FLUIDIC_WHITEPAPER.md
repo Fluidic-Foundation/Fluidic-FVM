@@ -227,7 +227,9 @@ The formula for a balance `B` after time `t`:
 B(t) = B(0) * e^(-λt)
 ```
 
-Where `λ` is the metabolic decay rate, set per domain.
+Where `λ` is the metabolic decay rate, set per domain and expressed in parts-per-million per synthesis tick (each tick a balance retains `(1_000_000 - λ)/1_000_000` of its value).
+
+In addition to staked balances, accounts that have **transacted recently** — within a grace window of synthesis ticks — are exempt from decay. Only balances that sit idle past the grace window erode, so ordinary active users are never penalized.
 
 This design has four effects:
 

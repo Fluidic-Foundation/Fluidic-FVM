@@ -7,11 +7,20 @@ pub type StreamId = [u8; 32];
 /// Basis-points denominator (10_000 = 100%).
 pub const BASIS_POINTS_DENOMINATOR: u64 = 10_000;
 
+/// Parts-per-million denominator (1_000_000 = 100%) used for the metabolic
+/// decay constant λ.  The finer resolution (versus basis points) lets the
+/// per-tick decay rate be tuned far more gently than 1 bp = 0.01%/tick allowed.
+pub const DECAY_DENOMINATOR: u64 = 1_000_000;
+
 /// Default exponential decay constant λ for the built-in DEX domain, expressed
-/// in basis points per synthesis tick.  A value of `1` means each tick a
-/// balance retains `(10_000 - 1) / 10_000 = 99.99%` of its value, i.e. 0.01%
-/// decays away per tick.
-pub const DEFAULT_DEX_LAMBDA_BP: u64 = 1;
+/// in parts-per-million per synthesis tick.  A value of `20` means each tick a
+/// balance retains `(1_000_000 - 20) / 1_000_000 = 99.998%` of its value, i.e.
+/// 0.002% decays away per tick.
+pub const DEFAULT_DEX_LAMBDA_PPM: u64 = 20;
+
+/// Number of ticks of activity grace: an account that transacted within this
+/// many ticks of the current synthesis tick is exempt from metabolic decay.
+pub const METABOLIC_IDLE_GRACE_TICKS: u64 = 300;
 
 /// Fraction of each tick's metabolically-decayed value that is *permanently
 /// burned* (removed from supply) rather than redistributed.  Expressed in basis
@@ -42,22 +51,22 @@ pub fn pow(mut base: u128, mut exp: u64) -> u128 {
 /// Closed-form exponential decay of a balance over `elapsed` synthesis ticks:
 ///
 /// ```text
-/// B(elapsed) = B(0) * (10_000 - λ)^elapsed / 10_000^elapsed
+/// B(elapsed) = B(0) * (1_000_000 - λ)^elapsed / 1_000_000^elapsed
 /// ```
 ///
 /// This is the discrete integer analogue of `B(t) = B(0) * e^(-λt)`.  All
 /// arithmetic is integer-only and deterministic, so every honest node computes
 /// the exact same remaining balance for a given `(balance, λ, elapsed)`.
-pub fn decayed_balance(balance: u128, lambda_bp: u64, elapsed: u64) -> u128 {
+pub fn decayed_balance(balance: u128, rate_ppm: u64, elapsed: u64) -> u128 {
     if balance == 0 || elapsed == 0 {
         return balance;
     }
     // Cap λ strictly below the denominator so a balance never fully vanishes in
-    // a single tick and the retained fraction is always >= 1 / 10_000.
-    let lambda_bp = lambda_bp.min(BASIS_POINTS_DENOMINATOR - 1);
-    let retain = (BASIS_POINTS_DENOMINATOR - lambda_bp) as u128;
+    // a single tick and the retained fraction is always >= 1 / 1_000_000.
+    let rate_ppm = rate_ppm.min(DECAY_DENOMINATOR - 1);
+    let retain = (DECAY_DENOMINATOR - rate_ppm) as u128;
     let numerator = pow(retain, elapsed);
-    let denominator = pow(BASIS_POINTS_DENOMINATOR as u128, elapsed);
+    let denominator = pow(DECAY_DENOMINATOR as u128, elapsed);
     balance.saturating_mul(numerator) / denominator
 }
 
@@ -74,8 +83,8 @@ pub struct MetabolicStream {
     pub initial_balance: u128,
     /// Synthesis tick at which the stream was created (decay anchor t=0).
     pub created_tick: u64,
-    /// Per-domain decay constant λ in basis points per tick (capped < 10_000).
-    pub lambda_bp: u64,
+    /// Per-domain decay constant λ in parts-per-million per tick (capped < 1_000_000).
+    pub rate_ppm: u64,
     /// Remaining balance after the most recent `process` call.
     pub remaining: u128,
     /// Last synthesis tick at which `process` advanced the stream.
@@ -84,8 +93,8 @@ pub struct MetabolicStream {
 
 impl MetabolicStream {
     /// Create a stream anchored at tick 0 with the given decay constant.
-    pub fn new(id: StreamId, owner: AccountId, initial_balance: u128, lambda_bp: u64) -> Self {
-        Self::new_at(id, owner, initial_balance, lambda_bp, 0)
+    pub fn new(id: StreamId, owner: AccountId, initial_balance: u128, rate_ppm: u64) -> Self {
+        Self::new_at(id, owner, initial_balance, rate_ppm, 0)
     }
 
     /// Create a stream anchored at an explicit `created_tick`.
@@ -93,16 +102,16 @@ impl MetabolicStream {
         id: StreamId,
         owner: AccountId,
         initial_balance: u128,
-        lambda_bp: u64,
+        rate_ppm: u64,
         created_tick: u64,
     ) -> Self {
-        let lambda_bp = lambda_bp.min(BASIS_POINTS_DENOMINATOR - 1);
+        let rate_ppm = rate_ppm.min(DECAY_DENOMINATOR - 1);
         Self {
             id,
             owner,
             initial_balance,
             created_tick,
-            lambda_bp,
+            rate_ppm,
             remaining: initial_balance,
             last_update_tick: created_tick,
         }
@@ -112,7 +121,7 @@ impl MetabolicStream {
     /// closed-form exponential curve anchored at `created_tick`.
     pub fn remaining_at(&self, tick: u64) -> u128 {
         let elapsed = tick.saturating_sub(self.created_tick);
-        decayed_balance(self.initial_balance, self.lambda_bp, elapsed)
+        decayed_balance(self.initial_balance, self.rate_ppm, elapsed)
     }
 
     /// Advance the stream to absolute synthesis `tick`.  Returns the value
@@ -191,14 +200,14 @@ mod tests {
 
     #[test]
     fn decayed_balance_matches_closed_form() {
-        // λ = 100 bp (1% per tick), retain 9_900/10_000.
+        // λ = 10_000 ppm (1% per tick), retain 990_000/1_000_000.
         let initial = 1_000_000u128;
-        assert_eq!(decayed_balance(initial, 100, 0), initial);
-        assert_eq!(decayed_balance(initial, 100, 1), 990_000);
-        // 1_000_000 * 9_900^2 / 10_000^2 = 1_000_000 * 98_010_000 / 100_000_000
-        assert_eq!(decayed_balance(initial, 100, 2), 980_100);
-        // 1_000_000 * 9_900^3 / 10_000^3
-        assert_eq!(decayed_balance(initial, 100, 3), 970_299);
+        assert_eq!(decayed_balance(initial, 10_000, 0), initial);
+        assert_eq!(decayed_balance(initial, 10_000, 1), 990_000);
+        // 1_000_000 * 990_000^2 / 1_000_000^2
+        assert_eq!(decayed_balance(initial, 10_000, 2), 980_100);
+        // 1_000_000 * 990_000^3 / 1_000_000^3
+        assert_eq!(decayed_balance(initial, 10_000, 3), 970_299);
     }
 
     #[test]
@@ -225,28 +234,28 @@ mod tests {
 
     #[test]
     fn lambda_is_capped_below_denominator() {
-        // λ >= 10_000 is clamped to 9_999 so at least 1/10_000 always survives.
+        // λ >= 1_000_000 is clamped to 999_999 so at least 1/1_000_000 always survives.
         let owner = KeyPair::generate().account_id();
-        let stream = MetabolicStream::new([9u8; 32], owner, 1_000_000, 50_000);
-        assert_eq!(stream.lambda_bp, BASIS_POINTS_DENOMINATOR - 1);
-        // One tick at the capped rate retains 1/10_000 of the balance.
-        assert_eq!(stream.remaining_at(1), 100);
+        let stream = MetabolicStream::new([9u8; 32], owner, 1_000_000, 2_000_000);
+        assert_eq!(stream.rate_ppm, DECAY_DENOMINATOR - 1);
+        // One tick at the capped rate retains 1/1_000_000 of the balance.
+        assert_eq!(stream.remaining_at(1), 1);
     }
 
     #[test]
     fn stream_remaining_follows_exponential_curve() {
         let owner = KeyPair::generate().account_id();
-        let stream = MetabolicStream::new([1u8; 32], owner, 1_000_000, 100);
+        let stream = MetabolicStream::new([1u8; 32], owner, 1_000_000, 10_000);
         assert_eq!(stream.remaining_at(0), 1_000_000);
         assert_eq!(stream.remaining_at(1), 990_000);
         assert_eq!(stream.remaining_at(2), 980_100);
-        assert_eq!(stream.remaining_at(5), decayed_balance(1_000_000, 100, 5));
+        assert_eq!(stream.remaining_at(5), decayed_balance(1_000_000, 10_000, 5));
     }
 
     #[test]
     fn process_returns_incremental_burn_each_tick() {
         let owner = KeyPair::generate().account_id();
-        let mut stream = MetabolicStream::new([2u8; 32], owner, 1_000_000, 100);
+        let mut stream = MetabolicStream::new([2u8; 32], owner, 1_000_000, 10_000);
 
         let (burned, exhausted) = stream.process(1);
         assert_eq!(burned, 10_000); // 1_000_000 - 990_000
@@ -267,7 +276,7 @@ mod tests {
     fn engine_accumulates_exponential_burn() {
         let engine = MetabolicDecayEngine::new();
         let owner = KeyPair::generate().account_id();
-        engine.add_stream(MetabolicStream::new([3u8; 32], owner, 1_000_000, 100));
+        engine.add_stream(MetabolicStream::new([3u8; 32], owner, 1_000_000, 10_000));
 
         let burned = engine.process_metabolic_degradation(1);
         assert_eq!(burned, 10_000);

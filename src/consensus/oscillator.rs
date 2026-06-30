@@ -382,8 +382,8 @@ impl Oscillator {
             .read()
             .unwrap()
             .get(&crate::crypto::DEFAULT_DEX_DOMAIN)
-            .map(|p| p.metabolic_lambda_bp)
-            .unwrap_or(crate::value::metabolic::DEFAULT_DEX_LAMBDA_BP);
+            .map(|p| p.metabolic_lambda_ppm)
+            .unwrap_or(crate::value::metabolic::DEFAULT_DEX_LAMBDA_PPM);
         let decayed = {
             let mut field = self.wave_field.lock().unwrap();
             field.apply_metabolic_decay(tick, dex_lambda, &immune_accounts)
@@ -500,6 +500,7 @@ impl Oscillator {
         // policy.
         let mut simulated_balances = dag.balances.clone();
         let mut stateful_hashes = Vec::with_capacity(order.len());
+        let mut active_accounts = std::collections::HashSet::new();
         let mut total_fees = 0u128;
         for hash in order {
             let node = dag.nodes.get(&hash).expect("hash in DAG");
@@ -545,6 +546,10 @@ impl Oscillator {
             total_fees = total_fees.saturating_add(fee);
             result.stateful_applied += 1;
             stateful_hashes.push(hash);
+            // Record both parties as active so they receive metabolic-decay
+            // grace starting next tick.
+            active_accounts.insert(shift.from);
+            active_accounts.insert(shift.to);
         }
         drop(dag);
 
@@ -602,6 +607,11 @@ impl Oscillator {
             field.ensure_account(*account);
             if let Some(mut state) = field.accounts.get_mut(account) {
                 state.balance.units = *balance;
+                // Accounts touched by an applied stateful shift this tick start
+                // their activity grace window.
+                if active_accounts.contains(account) {
+                    state.balance.last_active_tick = tick;
+                }
             }
         }
         result.final_balances = simulated_balances.clone();

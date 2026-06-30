@@ -824,7 +824,7 @@ fn domain_policy_json(
             OrderingMode::Fifo => "fifo",
         },
         "finalization_depth": policy.finalization_depth,
-        "metabolic_lambda_bp": policy.metabolic_lambda_bp,
+        "metabolic_lambda_ppm": policy.metabolic_lambda_ppm,
         "fee_policy": fee_policy_json(&policy.fee_policy),
         "shift_count": shift_count,
     })

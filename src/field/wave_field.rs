@@ -1,7 +1,7 @@
 use crate::consensus::ntt::{NTT_MODULUS, NttEngine};
 use crate::crypto::{AccountId, DEFAULT_DEX_DOMAIN, DomainId, PoolId};
 use crate::field::coordinates::{Coordinate, FrequencyVector};
-use crate::value::metabolic::{DEFAULT_DEX_LAMBDA_BP, decayed_balance};
+use crate::value::metabolic::{DEFAULT_DEX_LAMBDA_PPM, decayed_balance};
 use dashmap::DashMap;
 use std::collections::HashSet;
 
@@ -12,7 +12,7 @@ pub const WAVE_PRECISION: u128 = 1_000_000_000_000;
 ///
 /// Each balance carries the metabolic-decay bookkeeping needed to apply
 /// `B(t) = B(0) * e^(-λt)` lazily: `last_decay_tick` records the synthesis tick
-/// the value was last decayed to, and `domain`/`lambda_bp` identify which
+/// the value was last decayed to, and `domain`/`rate_ppm` identify which
 /// domain's decay constant governs it.  For now every balance is tracked under
 /// the DEX domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,12 +22,16 @@ pub struct Balance {
     pub last_decay_tick: u64,
     /// Concurrency domain governing this balance's decay constant.
     pub domain: DomainId,
-    /// Per-domain decay constant λ in basis points per tick.
-    pub lambda_bp: u64,
+    /// Per-domain decay constant λ in parts-per-million per tick.
+    pub rate_ppm: u64,
     /// Whether this balance is subject to metabolic decay.  Metabolic decay is
     /// WAVE's native monetary policy, so WAVE balances decay (`true`) while
     /// foreign value such as USDC and bridged assets are exempt (`false`).
     pub decays: bool,
+    /// Synthesis tick at which this account last transacted.  Accounts that
+    /// transacted within the activity grace window are exempt from decay.  A
+    /// value of `0` means "never transacted" and does not grant grace.
+    pub last_active_tick: u64,
 }
 
 impl Default for Balance {
@@ -36,8 +40,9 @@ impl Default for Balance {
             units: 0,
             last_decay_tick: 0,
             domain: DEFAULT_DEX_DOMAIN,
-            lambda_bp: DEFAULT_DEX_LAMBDA_BP,
+            rate_ppm: DEFAULT_DEX_LAMBDA_PPM,
             decays: true,
+            last_active_tick: 0,
         }
     }
 }
@@ -105,6 +110,15 @@ impl WaveField {
         self.ensure_account(id);
         if let Some(mut state) = self.accounts.get_mut(&id) {
             state.balance.decays = false;
+        }
+    }
+
+    /// Record that an account transacted at synthesis `tick`, starting its
+    /// activity grace window.  Idempotent; creates the account if absent.
+    pub fn mark_active(&self, id: AccountId, tick: u64) {
+        self.ensure_account(id);
+        if let Some(mut state) = self.accounts.get_mut(&id) {
+            state.balance.last_active_tick = tick;
         }
     }
 
@@ -218,8 +232,8 @@ impl WaveField {
     /// Apply exponential metabolic decay to every account and pool balance,
     /// advancing each to synthesis `tick`.
     ///
-    /// Decay follows the closed-form curve `B(t) = B(0) * (10_000 - λ)^Δ /
-    /// 10_000^Δ`, where `Δ = tick - last_decay_tick` for each balance.  Staked
+    /// Decay follows the closed-form curve `B(t) = B(0) * (1_000_000 - λ)^Δ /
+    /// 1_000_000^Δ`, where `Δ = tick - last_decay_tick` for each balance.  Staked
     /// operators listed in `immune_accounts` are exempt: their balances are not
     /// decayed, but their decay clock is still advanced so a later loss of
     /// immunity does not trigger a large catch-up burn.
@@ -228,7 +242,7 @@ impl WaveField {
     pub fn apply_metabolic_decay(
         &mut self,
         tick: u64,
-        lambda_bp: u64,
+        rate_ppm: u64,
         immune_accounts: &HashSet<AccountId>,
     ) -> u128 {
         let mut total_burned = 0u128;
@@ -238,12 +252,12 @@ impl WaveField {
                 entry.value_mut().balance.last_decay_tick = tick;
                 continue;
             }
-            let burned = decay_balance_in_place(&mut entry.value_mut().balance, tick, lambda_bp);
+            let burned = decay_balance_in_place(&mut entry.value_mut().balance, tick, rate_ppm);
             total_burned = total_burned.saturating_add(burned);
         }
 
         for mut entry in self.pools.iter_mut() {
-            let burned = decay_balance_in_place(entry.value_mut(), tick, lambda_bp);
+            let burned = decay_balance_in_place(entry.value_mut(), tick, rate_ppm);
             total_burned = total_burned.saturating_add(burned);
         }
 
@@ -253,9 +267,19 @@ impl WaveField {
 
 /// Decay a single balance in place to synthesis `tick`, returning the burned
 /// amount.  The balance's `last_decay_tick` is always advanced to `tick`.
-fn decay_balance_in_place(balance: &mut Balance, tick: u64, lambda_bp: u64) -> u128 {
+fn decay_balance_in_place(balance: &mut Balance, tick: u64, rate_ppm: u64) -> u128 {
     // Foreign value (USDC, bridged assets) does not decay; only WAVE does.
     if !balance.decays {
+        balance.last_decay_tick = tick;
+        return 0;
+    }
+    // Activity grace: an account that transacted within the grace window is
+    // exempt from decay.  `last_active_tick == 0` means "never transacted" and
+    // does not grant grace, so seeded-but-idle balances still decay.
+    if balance.last_active_tick != 0
+        && tick.saturating_sub(balance.last_active_tick)
+            <= crate::value::metabolic::METABOLIC_IDLE_GRACE_TICKS
+    {
         balance.last_decay_tick = tick;
         return 0;
     }
@@ -264,7 +288,7 @@ fn decay_balance_in_place(balance: &mut Balance, tick: u64, lambda_bp: u64) -> u
         balance.last_decay_tick = tick;
         return 0;
     }
-    let remaining = decayed_balance(balance.units, lambda_bp, elapsed);
+    let remaining = decayed_balance(balance.units, rate_ppm, elapsed);
     let burned = balance.units.saturating_sub(remaining);
     balance.units = remaining;
     balance.last_decay_tick = tick;
@@ -321,20 +345,20 @@ mod tests {
         let initial = 1_000_000_000_000u128; // 1 WAVE
         field.credit_account(id, initial);
 
-        let lambda_bp = 100; // 1% per tick
+        let rate_ppm = 10_000; // 1% per tick (10_000 / 1_000_000)
         let n = 5u64;
         let immune = HashSet::new();
-        let burned = field.apply_metabolic_decay(n, lambda_bp, &immune);
+        let burned = field.apply_metabolic_decay(n, rate_ppm, &immune);
 
         // The remaining balance must equal the closed-form exponential curve.
-        let expected_remaining = decayed_balance(initial, lambda_bp, n);
+        let expected_remaining = decayed_balance(initial, rate_ppm, n);
         assert_eq!(field.account_balance(id).units, expected_remaining);
         assert_eq!(burned, initial - expected_remaining);
         assert_eq!(field.account_balance(id).last_decay_tick, n);
 
         // A second decay continues the curve from where it left off.
-        let burned2 = field.apply_metabolic_decay(n + 1, lambda_bp, &immune);
-        let expected2 = decayed_balance(expected_remaining, lambda_bp, 1);
+        let burned2 = field.apply_metabolic_decay(n + 1, rate_ppm, &immune);
+        let expected2 = decayed_balance(expected_remaining, rate_ppm, 1);
         assert_eq!(field.account_balance(id).units, expected2);
         assert_eq!(burned2, expected_remaining - expected2);
     }
@@ -393,5 +417,31 @@ mod tests {
         let expected = decayed_balance(1_000_000, 100, 10);
         assert_eq!(field.account_balance(wave_id).units, expected);
         assert_eq!(burned, 1_000_000 - expected);
+    }
+
+    #[test]
+    fn metabolic_decay_grants_activity_grace() {
+        let mut field = WaveField::new(16);
+        let id = AccountId([12u8; 32]);
+        let initial = 1_000_000u128;
+        field.credit_account(id, initial);
+        // The account transacted at tick 5, starting its grace window.
+        field.mark_active(id, 5);
+
+        let immune = HashSet::new();
+        // Within the grace window: balance is untouched and nothing burns, but
+        // the decay clock still advances.
+        let burned = field.apply_metabolic_decay(7, 10_000, &immune);
+        assert_eq!(field.account_balance(id).units, initial);
+        assert_eq!(burned, 0);
+        assert_eq!(field.account_balance(id).last_decay_tick, 7);
+
+        // Beyond the grace window the balance decays from where the clock left
+        // off (tick 7 -> tick 306, i.e. 299 ticks).
+        let burned2 = field.apply_metabolic_decay(5 + 301, 10_000, &immune);
+        let expected = decayed_balance(initial, 10_000, (5 + 301) - 7);
+        assert_eq!(field.account_balance(id).units, expected);
+        assert!(expected < initial);
+        assert_eq!(burned2, initial - expected);
     }
 }
