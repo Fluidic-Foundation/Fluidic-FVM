@@ -411,9 +411,11 @@ impl Oscillator {
         // 0b. Sync decayed wave-field balances into the DAG so that stateful
         //     simulation and double-spend detection operate on the true,
         //     metabolically-decayed available balances.
+        //     Lock order: dag first, then wave_field (consistent with the rest
+        //     of the oscillator and persistence::save).
         {
-            let field = self.wave_field.lock().unwrap();
             let mut dag = self.dag.lock().unwrap();
+            let field = self.wave_field.lock().unwrap();
             for entry in field.accounts.iter() {
                 dag.balances
                     .insert(*entry.key(), entry.value().balance.units);
@@ -565,9 +567,10 @@ impl Oscillator {
         };
 
         // Deduct accumulated signal fees from the wave-field sender balances and
-        // add them to the reward pool.
+        // add them to the reward pool.  Compute fee_debt while holding the DAG,
+        // then release it before touching wave_field to preserve the global
+        // dag-first lock order.
         if total_fees > 0 {
-            let field = self.wave_field.lock().unwrap();
             let mut fee_debt: std::collections::HashMap<AccountId, u128> = std::collections::HashMap::new();
             {
                 let dag = self.dag.lock().unwrap();
@@ -578,8 +581,11 @@ impl Oscillator {
                     }
                 }
             }
-            for (account, fee) in fee_debt {
-                field.debit_account(account, fee.min(field.account_balance(account).units));
+            {
+                let field = self.wave_field.lock().unwrap();
+                for (account, fee) in fee_debt {
+                    field.debit_account(account, fee.min(field.account_balance(account).units));
+                }
             }
             {
                 let reward_pool = self.reward_pool.read().unwrap();
