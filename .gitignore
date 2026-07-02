@@ -1,13 +1,5 @@
 /target
 **/*.rs.bk
-/node_modules
-**/node_modules
-**/.next
-**/dist
-**/out
-
-# Generated copies of the dApp inside the landing site
-/landing/public/dapp
 *.log
 .env
 .env.local
@@ -16,7 +8,3 @@
 .vscode
 *.swp
 *.swo
-/testnet/terraform/.terraform
-/testnet/terraform/*.tfstate
-/testnet/terraform/*.tfstate.*
-/testnet/terraform/terraform.tfvars
