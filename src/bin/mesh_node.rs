@@ -12,6 +12,50 @@ use std::time::Duration;
 use tokio::time::interval;
 use tracing::{info, trace, warn};
 
+fn peer_cache_path() -> std::path::PathBuf {
+    let dir = std::env::var("FLUIDIC_DATA_DIR").unwrap_or_else(|_| "./data".to_string());
+    std::path::PathBuf::from(dir).join("peers.json")
+}
+
+fn load_peer_cache() -> Vec<String> {
+    let path = peer_cache_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(json) => serde_json::from_str::<Vec<String>>(&json).unwrap_or_default(),
+        Err(e) => {
+            warn!("failed to read peer cache {}: {}", path.display(), e);
+            Vec::new()
+        }
+    }
+}
+
+fn save_peer_cache(peers: &[String]) {
+    let path = peer_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(peers) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+async fn resolve_dns_seed(seed: &str) -> Vec<std::net::SocketAddr> {
+    let host = if seed.contains(':') {
+        seed.to_string()
+    } else {
+        format!("{}:7000", seed)
+    };
+    match tokio::net::lookup_host(&host).await {
+        Ok(addrs) => addrs.collect(),
+        Err(e) => {
+            warn!("failed to resolve DNS seed {}: {}", seed, e);
+            Vec::new()
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     eprintln!("mesh_node: starting up");
@@ -59,12 +103,30 @@ async fn main() {
         .parse()
         .expect("BIND_ADDR must be a valid SocketAddr");
 
-    let peers: Vec<String> = std::env::var("PEERS")
+    // Build initial peer list from explicit PEERS, cached peers, and DNS seeds.
+    let mut peers: Vec<String> = std::env::var("PEERS")
         .unwrap_or_default()
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+
+    let cached_peers = load_peer_cache();
+    peers.extend(cached_peers);
+
+    if let Ok(seed) = std::env::var("SEED_DNS") {
+        let seed = seed.trim();
+        if !seed.is_empty() {
+            info!("resolving DNS seed {}", seed);
+            for addr in resolve_dns_seed(seed).await {
+                peers.push(addr.to_string());
+            }
+        }
+    }
+
+    // Deduplicate while preserving order.
+    let mut seen = std::collections::HashSet::new();
+    peers.retain(|p| seen.insert(p.clone()));
 
     let synth_interval_ms: u64 = std::env::var("SYNTHESIS_INTERVAL_MS")
         .unwrap_or_else(|_| "1000".to_string())
@@ -205,8 +267,8 @@ async fn main() {
 
     // Connect to peers (resolve DNS names like mesh-node-1.mesh-node:7000).
     let mut peer_addrs: Vec<SocketAddr> = Vec::new();
-    for peer in peers {
-        match tokio::net::lookup_host(&peer).await {
+    for peer in &peers {
+        match tokio::net::lookup_host(peer).await {
             Ok(mut addrs) => {
                 if let Some(addr) = addrs.next() {
                     peer_addrs.push(addr);
@@ -220,6 +282,8 @@ async fn main() {
             Err(e) => warn!("failed to resolve peer {}: {}", peer, e),
         }
     }
+    info!("queued {} bootstrap peer(s)", peer_addrs.len());
+    save_peer_cache(&peers);
 
 
     // Ingest loop: apply incoming phase-shifts to the oscillator.
