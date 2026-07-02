@@ -18,7 +18,7 @@ import {
 
 type FluidicSdk = typeof import("@fluidic-foundation/sdk");
 
-const API_URL = "https://api.testnet.fluidic.foundation";
+const API_URL = "/api";
 
 const TEMPLATES: { label: string; description: string; code: string }[] = [
   {

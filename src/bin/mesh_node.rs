@@ -308,50 +308,58 @@ async fn main() {
 
     // Generator loop: emit periodic commutative phase-shifts.
     // Apply them locally so the node synthesizes real activity, and broadcast
-    // them so any connected peers see the same load.
-    let sender = gossip.outbound.clone();
-    let generator_key = local_keypair.clone();
-    let osc_gen = oscillator.clone();
-    let api_gen = api_state.clone();
-    tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_millis(generator_interval_ms));
-        let mut nonce = 0u64;
-        let pool = [0xAB; 32];
-        loop {
-            ticker.tick().await;
-            let shift = CommutativeShift::new(
-                &generator_key,
-                DEFAULT_DEX_DOMAIN,
-                Coordinate::from_scalar(nonce),
-                1_000_000,
-                pool,
-                nonce,
-                0,
-            );
-            let signal = Signal::Commutative(shift.clone());
-            if let Err(e) = osc_gen.ingest(signal.clone()) {
-                warn!("local generator ingest error: {}", e);
-            } else {
-                let hash = hex::encode(shift.hash());
-                api_gen.record_shift(RecentShift {
-                    hash,
-                    kind: "commutative".to_string(),
-                    status: "accepted".to_string(),
-                    domain: Some(hex::encode(shift.domain)),
-                    from: None,
-                    to: None,
-                    amount: Some(shift.delta.to_string()),
-                    token: Some("WAVE".to_string()),
-                    timestamp_ns: shift.timestamp_ns,
-                });
+    // them so any connected peers see the same load. Disabled by default on
+    // public deployments to avoid burning WAVE on synthetic traffic.
+    let enable_generator = std::env::var("ENABLE_GENERATOR")
+        .unwrap_or_else(|_| "false".to_string())
+        .eq_ignore_ascii_case("true");
+    if enable_generator {
+        let sender = gossip.outbound.clone();
+        let generator_key = local_keypair.clone();
+        let osc_gen = oscillator.clone();
+        let api_gen = api_state.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_millis(generator_interval_ms));
+            let mut nonce = 0u64;
+            let pool = [0xAB; 32];
+            loop {
+                ticker.tick().await;
+                let shift = CommutativeShift::new(
+                    &generator_key,
+                    DEFAULT_DEX_DOMAIN,
+                    Coordinate::from_scalar(nonce),
+                    1_000_000,
+                    pool,
+                    nonce,
+                    0,
+                );
+                let signal = Signal::Commutative(shift.clone());
+                if let Err(e) = osc_gen.ingest(signal.clone()) {
+                    warn!("local generator ingest error: {}", e);
+                } else {
+                    let hash = hex::encode(shift.hash());
+                    api_gen.record_shift(RecentShift {
+                        hash,
+                        kind: "commutative".to_string(),
+                        status: "accepted".to_string(),
+                        domain: Some(hex::encode(shift.domain)),
+                        from: None,
+                        to: None,
+                        amount: Some(shift.delta.to_string()),
+                        token: Some("WAVE".to_string()),
+                        timestamp_ns: shift.timestamp_ns,
+                    });
+                }
+                if let Err(e) = sender.send(signal).await {
+                    warn!("broadcast error: {}", e);
+                    return;
+                }
+                nonce += 1;
             }
-            if let Err(e) = sender.send(signal).await {
-                warn!("broadcast error: {}", e);
-                return;
-            }
-            nonce += 1;
-        }
-    });
+        });
+    } else {
+        info!("generator loop disabled; set ENABLE_GENERATOR=true to enable synthetic commutative traffic");
+    }
 
     // Periodic snapshot save.
     let osc_save = oscillator.clone();

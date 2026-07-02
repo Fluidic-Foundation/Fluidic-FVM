@@ -5,8 +5,19 @@ import { useState } from "react";
 import { AlertCircle, CheckCircle2, Copy, Globe, Layers, Network, Wallet, XCircle } from "lucide-react";
 
 export const API_BASE =
-  process.env.NEXT_PUBLIC_FLUIDIC_API || "https://api.testnet.fluidic.foundation";
-export const WS_BASE = API_BASE.replace(/^http/, (m) => (m === "https" ? "wss" : "ws"));
+  process.env.NEXT_PUBLIC_FLUIDIC_API || "";
+
+// Build WebSocket base from current host so relative API_BASE works both on
+// Railway and when served from a custom domain.
+function wsBase(): string {
+  if (typeof window === "undefined") {
+    return API_BASE.replace(/^http/, (m) => (m === "https" ? "wss" : "ws"));
+  }
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}`;
+}
+
+export const WS_BASE = wsBase();
 
 export const WAVE_PRECISION = BigInt("1000000000000"); // 1e12 sub-units per WAVE / USDC
 

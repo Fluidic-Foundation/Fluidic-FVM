@@ -17,7 +17,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 
-const API_URL = "https://api.testnet.fluidic.foundation";
+const API_URL = "/api";
 
 const CodeRunner = dynamic(() => import("./code-runner").then((m) => m.CodeRunner), {
   ssr: false,
