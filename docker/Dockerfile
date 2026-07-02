@@ -16,5 +16,5 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates iputils-ping && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /usr/src/fluidic/target/release/mesh_node /app/mesh_node
-EXPOSE 7000
+EXPOSE 7000 8080
 ENTRYPOINT ["/app/mesh_node"]
