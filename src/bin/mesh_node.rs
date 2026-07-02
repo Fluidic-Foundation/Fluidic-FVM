@@ -344,7 +344,8 @@ async fn main() {
                     // Signal reaches the ingest loop the peer is trusted.
                 }
                 other => {
-                    if let Err(e) = osc_ingest.ingest(other) {
+                    let registry = api_state_ingest.key_registry();
+                    if let Err(e) = osc_ingest.ingest(other, &registry) {
                         warn!("ingest error: {}", e);
                     }
                 }
@@ -398,7 +399,8 @@ async fn main() {
                     0,
                 );
                 let signal = Signal::Commutative(shift.clone());
-                if let Err(e) = osc_gen.ingest(signal.clone()) {
+                let registry = api_gen.key_registry();
+                if let Err(e) = osc_gen.ingest(signal.clone(), &registry) {
                     warn!("local generator ingest error: {}", e);
                 } else {
                     let hash = hex::encode(shift.hash());
@@ -407,7 +409,7 @@ async fn main() {
                         kind: "commutative".to_string(),
                         status: "accepted".to_string(),
                         domain: Some(hex::encode(shift.domain)),
-                        from: None,
+                        from: Some(shift.from.to_string()),
                         to: None,
                         amount: Some(shift.delta.to_string()),
                         token: Some("WAVE".to_string()),

@@ -119,6 +119,7 @@ export class FluidicClient {
   /** Submit a commutative shift. */
   async submitCommutative(shift: CommutativeShift): Promise<SubmitResult> {
     return this.postJson<SubmitResult>("/api/shift/commutative", {
+      from: shift.from,
       coordinate: {
         components: shift.coordinate.components.map((c) => Number(c)),
       },

@@ -57,7 +57,7 @@ fn spam_invalid_and_underfunded_shifts() {
         };
 
         // Count ingest-time rejections as well as synthesis-time rejections.
-        if osc.ingest(Signal::Stateful(shift)).is_err() {
+        if osc.ingest(Signal::Stateful(shift), &registry).is_err() {
             ingest_failures += 1;
         }
     }
@@ -150,7 +150,7 @@ fn mev_sandwich_extracts_value() {
     let mut attack = attack;
     attack.from = att_wave;
     attack.signature = attacker.sign(&attack.signing_bytes()).to_bytes().to_vec();
-    osc.ingest(Signal::Stateful(attack)).unwrap();
+    osc.ingest(Signal::Stateful(attack), &registry).unwrap();
     osc.synthesize(&registry);
     let mid_price = api.pool_price();
 
@@ -158,14 +158,14 @@ fn mev_sandwich_extracts_value() {
     let mut victim_swap = StatefulShift::new(&victim, DEFAULT_DEX_DOMAIN, api.pool_wave_account, 1_000_000_000_000, vc.clone(), vec![], 2, 0);
     victim_swap.from = vic_wave;
     victim_swap.signature = victim.sign(&victim_swap.signing_bytes()).to_bytes().to_vec();
-    osc.ingest(Signal::Stateful(victim_swap)).unwrap();
+    osc.ingest(Signal::Stateful(victim_swap), &registry).unwrap();
     osc.synthesize(&registry);
 
     // 3. Attacker buys back WAVE with USDC, closing most of the position at a profit.
     let mut close = StatefulShift::new(&attacker, DEFAULT_DEX_DOMAIN, api.pool_usdc_account, attack_amount / 2, vc.clone(), vec![], 3, 0);
     close.from = att_usdc;
     close.signature = attacker.sign(&close.signing_bytes()).to_bytes().to_vec();
-    osc.ingest(Signal::Stateful(close)).unwrap();
+    osc.ingest(Signal::Stateful(close), &registry).unwrap();
     osc.synthesize(&registry);
     let final_price = api.pool_price();
 
@@ -214,8 +214,8 @@ fn conflicting_shifts_across_two_oscillators_reject_double_spend() {
     vc_b.tick(osc_b.id);
     let shift_b = StatefulShift::new(&alice, DEFAULT_DEX_DOMAIN, charlie.account_id(), amount, vc_b, vec![], 2, 0);
 
-    osc_a.ingest(Signal::Stateful(shift_a)).unwrap();
-    osc_b.ingest(Signal::Stateful(shift_b)).unwrap();
+    osc_a.ingest(Signal::Stateful(shift_a), &registry).unwrap();
+    osc_b.ingest(Signal::Stateful(shift_b), &registry).unwrap();
 
     // Both synthesize independently (partitioned state).
     let _res_a = osc_a.synthesize(&registry);
@@ -226,7 +226,7 @@ fn conflicting_shifts_across_two_oscillators_reject_double_spend() {
     let dag_b = osc_b.dag.lock().unwrap();
     for (_, node) in dag_b.nodes.iter() {
         if matches!(node.status, fluidic::consensus::dag::ShiftStatus::Accepted | fluidic::consensus::dag::ShiftStatus::Finalized) {
-            osc_a.ingest(Signal::Stateful(node.shift.clone())).unwrap();
+            osc_a.ingest(Signal::Stateful(node.shift.clone()), &registry).unwrap();
         }
     }
     drop(dag_b);

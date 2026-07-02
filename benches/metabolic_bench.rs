@@ -65,7 +65,7 @@ fn build_workload() -> (
             1_000_000,
             vc.clone(),
             vec![],
-            i as u64,
+            1_000 + i as u64,
             0,
         )));
     }
@@ -118,7 +118,7 @@ fn bench_metabolic_decay(c: &mut Criterion) {
                     || create_oscillator(count, &keypairs),
                     |osc| {
                         for shift in &shifts {
-                            osc.ingest(shift.clone()).unwrap();
+                            osc.ingest(shift.clone(), &registry).unwrap();
                         }
                         let result = osc.synthesize(&registry);
                         black_box(result);

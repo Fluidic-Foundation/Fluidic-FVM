@@ -54,9 +54,11 @@ pub struct Oscillator {
     pub dag: Arc<Mutex<VectorClockDag>>,
     pub keypair: KeyPair,
     pub vector_clock: Arc<Mutex<VectorClock>>,
-    /// Pending commutative deltas waiting for the next NTT synthesis window.
-    /// Each entry carries its target domain so per-domain policy is respected.
-    pub pending_commutative: Arc<Mutex<Vec<(DomainId, Coordinate, i128, PoolId)>>>,
+    /// Pending commutative shifts waiting for the next NTT synthesis window.
+    /// Each entry carries its target domain so per-domain policy is respected,
+    /// and the signed shift is kept so signatures can be verified before the
+    /// batch is applied.
+    pub pending_commutative: Arc<Mutex<Vec<CommutativeShift>>>,
     /// Pending stateful shifts awaiting DAG insertion during synthesis.
     pub pending_stateful: Arc<Mutex<Vec<StatefulShift>>>,
     pub seen_signatures: DashMap<Vec<u8>, ()>,
@@ -261,9 +263,13 @@ impl Oscillator {
 
     /// Ingest a single phase-shift. Deduplicates and queues for the next
     /// synthesis cycle.
-    pub fn ingest(&self, shift: Signal) -> Result<(), String> {
+    pub fn ingest(
+        &self,
+        shift: Signal,
+        key_registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> Result<(), String> {
         match shift {
-            Signal::Commutative(c) => self.ingest_commutative(c),
+            Signal::Commutative(c) => self.ingest_commutative(c, key_registry),
             Signal::Stateful(s) => self.ingest_stateful(s),
             Signal::Registration(_) => Ok(()), // registrations are applied immediately
             Signal::Stake(_) => Err("stake signals must be applied via apply_stake".to_string()),
@@ -387,7 +393,10 @@ impl Oscillator {
         }
     }
 
-    fn ingest_commutative(&self, shift: CommutativeShift) -> Result<(), String> {
+    fn ingest_commutative(&self,
+        mut shift: CommutativeShift,
+        key_registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> Result<(), String> {
         let policy = self
             .domain_registry
             .read()
@@ -401,20 +410,32 @@ impl Oscillator {
                 hex::encode(shift.domain)
             ));
         }
-        // TODO: commutative shifts currently carry no authenticated `from` field,
-        // so per-sender-domain nonce replay protection cannot be enforced here.
-        // Signature-hash deduplication prevents identical shift replay, which is
-        // sufficient for state-independent commutative deltas but does not match
-        // the whitepaper's "sender-domain nonce" wording. Add `from` + signature
-        // verification to close this gap.
+
+        // Verify the commutative shift is signed by its claimed sender.
+        let Some(pk) = key_registry.get(&shift.from) else {
+            return Err(format!(
+                "unknown sender {} for commutative shift",
+                hex::encode(shift.from.0)
+            ));
+        };
+        if !shift.verify(pk) {
+            return Err(format!(
+                "invalid signature for commutative shift from {}",
+                hex::encode(shift.from.0)
+            ));
+        }
+
+        self.check_and_record_nonce(shift.from, shift.domain, shift.nonce)?;
+
         if self.seen_signatures.contains_key(&shift.signature) {
             return Ok(()); // already processed
         }
-        self.seen_signatures.insert(shift.signature, ());
+        self.seen_signatures.insert(shift.signature.clone(), ());
+        if shift.first_seen_at_ns == 0 {
+            shift.first_seen_at_ns = now_ns();
+        }
         let mut pending = self.pending_commutative.lock().unwrap();
-        // Latency for commutative signals is tracked by the batch synthesis
-        // interval; individual first-seen times are not recorded.
-        pending.push((shift.domain, shift.coordinate, shift.delta, shift.pool_id));
+        pending.push(shift);
         Ok(())
     }
 
@@ -573,27 +594,29 @@ impl Oscillator {
         {
             let mut pending = self.pending_commutative.lock().unwrap();
             if !pending.is_empty() {
-                let deltas: Vec<(DomainId, Coordinate, i128, PoolId)> = pending.drain(..).collect();
+                let shifts: Vec<CommutativeShift> = pending.drain(..).collect();
                 drop(pending);
 
                 let registry = self.domain_registry.read().unwrap();
-                let mut by_domain: std::collections::HashMap<DomainId, Vec<(Coordinate, i128, PoolId)>> =
+                let mut by_domain: std::collections::HashMap<DomainId, (Vec<(Coordinate, i128, PoolId)>, Vec<CommutativeShift>)> =
                     std::collections::HashMap::new();
-                for (domain, coord, delta, pool) in deltas {
-                    match registry.get(&domain) {
+                for shift in shifts {
+                    match registry.get(&shift.domain) {
                         Some(policy) if policy.commutative => {
-                            by_domain.entry(domain).or_default().push((coord, delta, pool));
+                            let entry = by_domain.entry(shift.domain).or_default();
+                            entry.0.push((shift.coordinate, shift.delta, shift.pool_id));
+                            entry.1.push(shift);
                         }
                         Some(_) => {
                             tracing::warn!(
                                 "commutative shift for non-commutative domain {} dropped",
-                                hex::encode(domain)
+                                hex::encode(shift.domain)
                             );
                         }
                         None => {
                             tracing::warn!(
                                 "commutative shift for unknown domain {} dropped",
-                                hex::encode(domain)
+                                hex::encode(shift.domain)
                             );
                         }
                     }
@@ -602,18 +625,16 @@ impl Oscillator {
 
                 let mut field = self.wave_field.lock().unwrap();
                 let mut total_applied = 0usize;
-                for (domain, domain_deltas) in by_domain {
+                for (domain, (domain_deltas, mut original_shifts)) in by_domain {
                     if domain_deltas.is_empty() {
                         continue;
                     }
                     comm_root = commutative_root(tick, &domain_deltas);
                     if let Err(e) = field.synthesize_commutative_batch(&domain_deltas) {
                         warn!("commutative synthesis failed for domain {}: {}", hex::encode(domain), e);
-                        // Re-queue only the failed domain's deltas so others are not lost.
+                        // Re-queue only the failed domain's original shifts so others are not lost.
                         let mut pending = self.pending_commutative.lock().unwrap();
-                        for (coord, delta, pool) in domain_deltas {
-                            pending.push((domain, coord, delta, pool));
-                        }
+                        pending.append(&mut original_shifts);
                         comm_root = [0u8; 32];
                     } else {
                         total_applied += domain_deltas.len();
@@ -875,7 +896,9 @@ mod tests {
             1,
             0,
         );
-        osc.ingest(Signal::Stateful(st1)).unwrap();
+        let mut registry = HashMap::new();
+        registry.insert(alice.account_id(), alice.public_key());
+        osc.ingest(Signal::Stateful(st1), &registry).unwrap();
 
         // Same nonce should be rejected.
         let st2 = StatefulShift::new(
@@ -888,7 +911,7 @@ mod tests {
             1,
             0,
         );
-        assert!(osc.ingest(Signal::Stateful(st2)).is_err());
+        assert!(osc.ingest(Signal::Stateful(st2), &registry).is_err());
 
         // Higher nonce is accepted.
         let st3 = StatefulShift::new(
@@ -901,7 +924,7 @@ mod tests {
             2,
             0,
         );
-        osc.ingest(Signal::Stateful(st3)).unwrap();
+        osc.ingest(Signal::Stateful(st3), &registry).unwrap();
     }
 
     #[test]
@@ -973,6 +996,10 @@ mod tests {
         osc.stake_table.stake(operator.account_id(), 1_000_000_000_000_000_000);
 
         // Create a stateful shift in the strict domain.
+        let mut registry = HashMap::new();
+        registry.insert(alice.account_id(), alice.public_key());
+        registry.insert(operator.account_id(), operator.public_key());
+
         let mut vc = VectorClock::new();
         vc.tick(osc.id);
         let st = StatefulShift::new(
@@ -985,13 +1012,10 @@ mod tests {
             1,
             0,
         );
-        osc.ingest(Signal::Stateful(st)).unwrap();
+        osc.ingest(Signal::Stateful(st), &registry).unwrap();
 
         // First synthesis: strict shift is inserted but skipped because quorum for
         // its insertion tick does not yet exist (certificate is produced at end).
-        let mut registry = HashMap::new();
-        registry.insert(alice.account_id(), alice.public_key());
-        registry.insert(operator.account_id(), operator.public_key());
         let result1 = osc.synthesize(&registry);
         assert_eq!(result1.stateful_applied, 0);
 
@@ -1008,6 +1032,9 @@ mod tests {
         let bob = KeyPair::generate();
         osc.seed_account(alice.account_id(), 10_000_000_000_000);
 
+        let mut registry = HashMap::new();
+        registry.insert(alice.account_id(), alice.public_key());
+
         // Commutative: add 100 to pool every tick.
         let pool = [9u8; 32];
         for i in 0..10 {
@@ -1020,18 +1047,16 @@ mod tests {
                 i as u64,
                 0,
             );
-            osc.ingest(Signal::Commutative(shift)).unwrap();
+            osc.ingest(Signal::Commutative(shift), &registry).unwrap();
         }
 
         // Stateful: send 500 to Bob.
         let mut vc = VectorClock::new();
         vc.tick(osc.id);
         let st = StatefulShift::new(
-            &alice, DEFAULT_DEX_DOMAIN, bob.account_id(), 500, vc, vec![], 1, 0);
-        osc.ingest(Signal::Stateful(st)).unwrap();
+            &alice, DEFAULT_DEX_DOMAIN, bob.account_id(), 500, vc, vec![], 100, 0);
+        osc.ingest(Signal::Stateful(st), &registry).unwrap();
 
-        let mut registry = HashMap::new();
-        registry.insert(alice.account_id(), alice.public_key());
         let result = osc.synthesize(&registry);
 
         assert_eq!(result.commutative_applied, 10);

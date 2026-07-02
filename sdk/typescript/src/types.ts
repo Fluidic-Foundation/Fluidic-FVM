@@ -34,6 +34,7 @@ export interface VectorClock {
 /** Raw commutative shift as accepted by the node. */
 export interface CommutativeShift {
   domain: DomainId;
+  from: AccountId;
   coordinate: Coordinate;
   delta: bigint;
   pool_id: PoolId;

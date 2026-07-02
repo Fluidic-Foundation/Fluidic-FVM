@@ -51,7 +51,7 @@ fn partitioned_mesh_reaches_quorum_after_heal() {
         0,
     );
     for node in &nodes {
-        node.ingest(Signal::Stateful(shift.clone())).unwrap();
+        node.ingest(Signal::Stateful(shift.clone()), &key_registry).unwrap();
     }
 
     // Partition: nodes 0 and 1 can exchange messages; node 2 is isolated.

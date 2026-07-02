@@ -74,6 +74,7 @@ struct StateQuery {
 struct CommutativeShiftRequest {
     #[serde(default)]
     domain: Option<String>,
+    from: String,
     coordinate: CoordinateRequest,
     delta: String,
     pool_id: String,
@@ -411,7 +412,7 @@ async fn submit_stateful(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let shift = parse_stateful_shift(req)?;
 
-    let registry = state.registry.read().unwrap();
+    let registry = state.key_registry();
     let pk = match registry.get(&shift.from) {
         Some(pk) => pk,
         None => {
@@ -428,7 +429,6 @@ async fn submit_stateful(
         );
         return Err((StatusCode::UNAUTHORIZED, "invalid signature".to_string()));
     }
-    drop(registry);
 
     // Validate vector clock against locally observed causal history.
     {
@@ -482,7 +482,7 @@ async fn submit_stateful(
         };
         state
             .oscillator
-            .ingest(Signal::Stateful(payout))
+            .ingest(Signal::Stateful(payout), &registry)
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("payout ingest failed: {}", e)))?;
     }
 
@@ -500,7 +500,7 @@ async fn submit_stateful(
     });
     state
         .oscillator
-        .ingest(Signal::Stateful(shift))
+        .ingest(Signal::Stateful(shift), &registry)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("shift ingest failed: {}", e)))?;
 
     Ok(Json(serde_json::json!({
@@ -528,9 +528,11 @@ async fn submit_commutative(
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let pool_id = parse_hash(&req.pool_id)?;
     let signature = hex::decode(&req.signature).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let from = parse_account(&req.from).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let shift = CommutativeShift {
         domain,
+        from,
         coordinate: crate::field::coordinates::Coordinate::new(components),
         delta,
         pool_id,
@@ -540,13 +542,14 @@ async fn submit_commutative(
         signature,
     };
 
+    let registry = state.key_registry();
     let hash = shift.hash();
     state.record_shift(RecentShift {
         hash: hex::encode(hash),
         kind: "commutative".to_string(),
         status: "accepted".to_string(),
         domain: Some(hex::encode(shift.domain)),
-        from: None,
+        from: Some(shift.from.to_string()),
         to: None,
         amount: Some(shift.delta.to_string()),
         token: Some("units".to_string()),
@@ -554,7 +557,7 @@ async fn submit_commutative(
     });
     state
         .oscillator
-        .ingest(Signal::Commutative(shift))
+        .ingest(Signal::Commutative(shift), &registry)
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(Json(serde_json::json!({
         "hash": hex::encode(hash),

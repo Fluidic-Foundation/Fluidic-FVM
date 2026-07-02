@@ -11,6 +11,9 @@ async fn main() {
     let bob = KeyPair::generate();
     oscillator.seed_account(alice.account_id(), 1_000_000_000_000_000);
 
+    let mut registry = HashMap::new();
+    registry.insert(alice.account_id(), alice.public_key());
+
     // Inject a few commutative pool shifts.
     let pool = [42u8; 32];
     for i in 0..100 {
@@ -24,7 +27,7 @@ async fn main() {
             0,
         );
         oscillator
-            .ingest(Signal::Commutative(shift))
+            .ingest(Signal::Commutative(shift), &registry)
             .expect("ingest commutative");
     }
 
@@ -42,11 +45,9 @@ async fn main() {
         0,
     );
     oscillator
-        .ingest(Signal::Stateful(st))
+        .ingest(Signal::Stateful(st), &registry)
         .expect("insert stateful");
 
-    let mut registry = HashMap::new();
-    registry.insert(alice.account_id(), alice.public_key());
     let result = oscillator.synthesize(&registry);
 
     println!("Commutative applied: {}", result.commutative_applied);

@@ -34,6 +34,8 @@ fn build_workload(
     }
 
     // Stateful transfers chained through the first few accounts.
+    // Use a nonce range that does not overlap with the commutative workload so
+    // per-account-domain replay protection accepts both signal kinds.
     let mut vc = VectorClock::new();
     vc.tick([1u8; 32]);
     for i in 0..20 {
@@ -48,7 +50,7 @@ fn build_workload(
             1_000_000_000,
             shift_vc,
             vec![],
-            i as u64,
+            1_000 + i as u64,
             0,
         )));
     }
@@ -76,7 +78,7 @@ fn independent_nodes_converge_to_identical_state() {
     // Feed the same signals in the same order to every node.
     for node in &nodes {
         for shift in &shifts {
-            node.ingest(shift.clone()).unwrap();
+            node.ingest(shift.clone(), &registry).unwrap();
         }
     }
 
@@ -136,6 +138,9 @@ fn synthesis_certificates_are_produced_and_verifiable() {
     );
 
     let pool = [0xCD; 32];
+    let mut registry = HashMap::new();
+    registry.insert(kp.account_id(), kp.public_key());
+
     osc.ingest(Signal::Commutative(CommutativeShift::new(
         &kp,
         DEFAULT_DEX_DOMAIN,
@@ -144,11 +149,8 @@ fn synthesis_certificates_are_produced_and_verifiable() {
         pool,
         1,
         0,
-    )))
+    )), &registry)
     .unwrap();
-
-    let mut registry = HashMap::new();
-    registry.insert(kp.account_id(), kp.public_key());
 
     let result = osc.synthesize(&registry);
     assert!(result.commutative_applied > 0);

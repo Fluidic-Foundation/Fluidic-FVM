@@ -52,7 +52,7 @@ fn build_workload() -> (
             1_000_000,
             vc.clone(),
             vec![],
-            i as u64,
+            1_000 + i as u64,
             0,
         )));
     }
@@ -85,7 +85,7 @@ fn run_synthesis(
     registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
 ) {
     for shift in shifts {
-        osc.ingest(shift.clone()).unwrap();
+        osc.ingest(shift.clone(), registry).unwrap();
     }
     osc.synthesize(registry);
 }

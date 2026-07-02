@@ -56,7 +56,9 @@ fn generate_stateful_shifts(
     let mut valid = Vec::with_capacity(STATEFUL_COUNT - DOUBLE_SPEND_COUNT);
     let mut double_spends = Vec::with_capacity(DOUBLE_SPEND_COUNT * 2);
 
-    // Valid chained transfers.
+    // Valid chained transfers.  Use nonces that do not overlap with the
+    // commutative workload so per-account replay protection accepts them.
+    const STATEFUL_NONCE_OFFSET: u64 = 100_000;
     for i in 0..(STATEFUL_COUNT - DOUBLE_SPEND_COUNT) {
         let from_idx = rng.gen_range(0..valid_keypairs.len());
         let to_idx = rng.gen_range(0..valid_keypairs.len());
@@ -74,12 +76,13 @@ fn generate_stateful_shifts(
             amount,
             vc,
             predecessors,
-            i as u64,
+            STATEFUL_NONCE_OFFSET + i as u64,
             0,
         ));
     }
 
     // Double-spend attempts: two concurrent transfers from the same reserved account.
+    const DOUBLE_SPEND_NONCE_OFFSET: u64 = 200_000;
     for i in 0..DOUBLE_SPEND_COUNT {
         let from_kp = &ds_keypairs[i % ds_keypairs.len()];
         let to1 = valid_keypairs[rng.gen_range(0..valid_keypairs.len())].account_id();
@@ -98,7 +101,7 @@ fn generate_stateful_shifts(
             amount,
             vc_a,
             vec![],
-            (STATEFUL_COUNT + i * 2) as u64,
+            DOUBLE_SPEND_NONCE_OFFSET + (i * 2) as u64,
             0,
         ));
         double_spends.push(StatefulShift::new(
@@ -108,7 +111,7 @@ fn generate_stateful_shifts(
             amount,
             vc_b,
             vec![],
-            (STATEFUL_COUNT + i * 2 + 1) as u64,
+            DOUBLE_SPEND_NONCE_OFFSET + (i * 2 + 1) as u64,
             0,
         ));
     }
@@ -157,16 +160,17 @@ async fn ten_thousand_overlapping_phase_shifts() {
         let c = commutative.clone();
         let v = valid_stateful.clone();
         let d = double_spends.clone();
+        let registry = registry.clone();
         handles.push(tokio::spawn(async move {
             for shift in c {
-                osc.ingest(Signal::Commutative(shift)).unwrap();
+                osc.ingest(Signal::Commutative(shift), &registry).unwrap();
             }
             for shift in v {
-                osc.ingest(Signal::Stateful(shift)).unwrap();
+                osc.ingest(Signal::Stateful(shift), &registry).unwrap();
             }
             for shift in d {
                 // Double-spends may be rejected at ingestion or synthesis.
-                let _ = osc.ingest(Signal::Stateful(shift));
+                let _ = osc.ingest(Signal::Stateful(shift), &registry);
             }
         }));
     }

@@ -20,7 +20,7 @@ fn shift_reaches_finalized_after_confirmation_depth() {
     let mut registry = HashMap::new();
     registry.insert(alice.account_id(), alice.public_key());
 
-    osc.ingest(Signal::Stateful(shift)).unwrap();
+    osc.ingest(Signal::Stateful(shift), &registry).unwrap();
 
     // First synthesis accepts the shift.
     osc.synthesize(&registry);
@@ -65,8 +65,8 @@ fn double_spend_is_rejected_and_first_shift_finalizes() {
     let mut registry = HashMap::new();
     registry.insert(alice.account_id(), alice.public_key());
 
-    osc.ingest(Signal::Stateful(shift_a)).unwrap();
-    osc.ingest(Signal::Stateful(shift_b)).unwrap();
+    osc.ingest(Signal::Stateful(shift_a), &registry).unwrap();
+    osc.ingest(Signal::Stateful(shift_b), &registry).unwrap();
 
     // Run synthesize enough times for finalization.
     for _ in 0..=VectorClockDag::FINALIZATION_DEPTH {

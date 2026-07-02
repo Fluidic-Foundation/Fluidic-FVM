@@ -53,12 +53,14 @@ export function buildCommutativeShift(
   params: CommutativeShiftParams
 ): CommutativeShift {
   const domain = params.domain ?? DEFAULT_DEX_DOMAIN;
+  const from = params.signer.accountId;
   const nonce = params.nonce ?? 0n;
   const timestampNs = params.timestampNs ?? nowNs();
 
   const signingBytes = concatBytes(
-    new TextEncoder().encode("FLUIDIC:COMMUTATIVE:v2"),
+    new TextEncoder().encode("FLUIDIC:COMMUTATIVE:v3"),
     hexToBytes(ensureHex32(domain)),
+    hexToBytes(ensureHex32(from)),
     coordinateToBytes(params.coordinate),
     i128ToLeBytes(params.delta),
     hexToBytes(ensureHex32(params.poolId)),
@@ -70,6 +72,7 @@ export function buildCommutativeShift(
 
   return {
     domain,
+    from,
     coordinate: params.coordinate,
     delta: params.delta,
     pool_id: params.poolId,
@@ -199,8 +202,9 @@ export function hashStatefulShift(shift: StatefulShift): TxHash {
 
 export function hashCommutativeShift(shift: CommutativeShift): TxHash {
   const signingBytes = concatBytes(
-    new TextEncoder().encode("FLUIDIC:COMMUTATIVE:v2"),
+    new TextEncoder().encode("FLUIDIC:COMMUTATIVE:v3"),
     hexToBytes(ensureHex32(shift.domain)),
+    hexToBytes(ensureHex32(shift.from)),
     coordinateToBytes(shift.coordinate),
     i128ToLeBytes(shift.delta),
     hexToBytes(ensureHex32(shift.pool_id)),

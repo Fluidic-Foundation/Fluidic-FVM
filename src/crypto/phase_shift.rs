@@ -76,6 +76,7 @@ impl VectorClock {
 pub struct CommutativeShift {
     #[serde(default = "default_domain")]
     pub domain: DomainId,
+    pub from: AccountId,
     pub coordinate: Coordinate,
     pub delta: i128,
     pub pool_id: PoolId,
@@ -96,8 +97,10 @@ impl CommutativeShift {
         nonce: u64,
         timestamp_ns: u64,
     ) -> Self {
+        let from = keypair.account_id();
         let mut shift = Self {
             domain,
+            from,
             coordinate,
             delta,
             pool_id,
@@ -113,8 +116,9 @@ impl CommutativeShift {
 
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(128);
-        buf.extend_from_slice(b"FLUIDIC:COMMUTATIVE:v2");
+        buf.extend_from_slice(b"FLUIDIC:COMMUTATIVE:v3");
         buf.extend_from_slice(&self.domain);
+        buf.extend_from_slice(self.from.as_bytes());
         buf.extend_from_slice(&self.coordinate.to_bytes());
         buf.extend_from_slice(&self.delta.to_le_bytes());
         buf.extend_from_slice(&self.pool_id);
@@ -134,7 +138,10 @@ impl CommutativeShift {
         let Ok(sig) = Signature::from_slice(&self.signature) else {
             return false;
         };
-        KeyPair::verify(public_key, &self.signing_bytes(), &sig)
+        if !KeyPair::verify(public_key, &self.signing_bytes(), &sig) {
+            return false;
+        }
+        AccountId::from_public_key(public_key) == self.from
     }
 }
 
