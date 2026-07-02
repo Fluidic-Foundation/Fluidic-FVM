@@ -305,20 +305,23 @@ Under the hood, the operation is asynchronous and parallel. On the surface, it l
 
 Fluidic is currently in active development. The following components are functional:
 
-- Rust `mesh_node` with HTTP/WebSocket API
-- Ed25519-signed stateful shifts
-- Vector-Clock DAG with finality depth
+- Rust `mesh_node` with HTTP/WebSocket API and expanded EVM JSON-RPC surface
+- Ed25519-signed stateful and commutative shifts
+- Sender-domain nonce replay protection
+- Vector-Clock DAG with causal tiebreaking and finality depth
+- Commutative, causal, and strict concurrency domain policies
+- On-chain domain registration with a WAVE reservation fee
+- Synthesis certificates and operator slashing for equivocation
 - DEX dApp executing live swaps against the node
-- Finality and adversarial-load test suites
+- Light-client and bridge scaffold modules
 - Developer documentation and mesh explorer
 
 The roadmap includes:
 
 1. **Operator registry and staking contracts**
-2. **Synthesis certificates and slashing conditions**
-3. **Production-grade RPC gateway for EVM compatibility**
-4. **Bridge domains for Ethereum and Solana**
-5. **Mainnet deployment**
+2. **Production-grade RPC gateway for EVM compatibility**
+3. **Live bridge adapters for Ethereum and Solana**
+4. **Mainnet deployment**
 
 ---
 
@@ -326,7 +329,7 @@ The roadmap includes:
 
 Blockchains taught the world that decentralized state is possible. Fluidic argues that decentralized state does not need to be sequential.
 
-By replacing the block with the Wave-Field, the global lock with Concurrency Domains, and the transaction with the Signal, Fluidic achieves the properties the next generation of decentralized applications actually need: horizontal scalability, sub-millisecond confirmation, predictable economics, and a developer experience freed from the artifacts of block-based consensus.
+By replacing the block with the Wave-Field, the global lock with Concurrency Domains, and the transaction with the Signal, Fluidic achieves the properties the next generation of decentralized applications actually need: horizontal scalability, sub-second confirmation, predictable economics, and a developer experience freed from the artifacts of block-based consensus.
 
 The future of infrastructure is not a ledger. It is a mesh.
 
