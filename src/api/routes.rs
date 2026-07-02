@@ -5,7 +5,7 @@ use crate::crypto::{AccountId, CommutativeShift, KeyPair, Signal, StakeShift, St
 use crate::evm::{block_hash_for, evm_address_to_fluidic};
 use axum::{
     extract::{Path, Query, State, WebSocketUpgrade},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -1298,9 +1298,38 @@ async fn get_sync_shifts(
     }))
 }
 
+fn gossip_psk() -> Option<[u8; 32]> {
+    std::env::var("FLUIDIC_PSK")
+        .ok()
+        .and_then(|s| {
+            let bytes = hex::decode(s.trim()).ok()?;
+            if bytes.len() == 32 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Some(arr)
+            } else {
+                None
+            }
+        })
+}
+
 async fn ws_handler(
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
     State(state): State<Arc<ApiState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| crate::api::websocket::handle_socket(socket, state))
+    ws.protocols([&"fluidic-gossip" as &str,
+    ])
+        .on_upgrade(move |socket| async move {
+            let is_gossip = headers
+                .get("sec-websocket-protocol")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.contains("fluidic-gossip"))
+                .unwrap_or(false);
+            if is_gossip {
+                crate::network::handle_gossip_socket(socket, state, gossip_psk()).await
+            } else {
+                crate::api::websocket::handle_socket(socket, state).await
+            }
+        })
 }
