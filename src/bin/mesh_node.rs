@@ -5,8 +5,8 @@ use fluidic::crypto::keys::KeyPair;
 use fluidic::crypto::{CommutativeShift, Signal, StakeShift, DEFAULT_DEX_DOMAIN};
 use fluidic::field::coordinates::Coordinate;
 use fluidic::network::{
-    fetch_bootstrap_url, resolve_txt_seeds, EndpointScheme, PeerAnnouncement, TcpGossipNode,
-    WsGossipNode,
+    fetch_bootstrap_url, mdns_announce, mdns_browse, resolve_txt_seeds, DhtDiscovery,
+    EndpointScheme, PeerAnnouncement, TcpGossipNode, WsGossipNode, DEFAULT_NETWORK_ID,
 };
 use fluidic::persistence;
 use std::net::SocketAddr;
@@ -76,6 +76,17 @@ fn add_bootstrap_peer(peers: &mut Vec<String>, endpoint: &str) {
         Some((EndpointScheme::Ws | EndpointScheme::Wss, _)) => peers.push(endpoint.to_string()),
         None if endpoint.contains(':') => peers.push(endpoint.to_string()),
         None => warn!("ignoring malformed bootstrap endpoint: {}", endpoint),
+    }
+}
+
+/// Return the local IP to advertise over mDNS.  Unspecified and loopback
+/// addresses are skipped because they don't help LAN peers reach us.
+fn local_announce_ip(bind_addr: SocketAddr) -> Option<std::net::IpAddr> {
+    let ip = bind_addr.ip();
+    if ip.is_unspecified() || ip.is_loopback() {
+        None
+    } else {
+        Some(ip)
     }
 }
 
@@ -167,6 +178,70 @@ async fn main() {
                 add_bootstrap_peer(&mut peers, &endpoint);
             }
         }
+    }
+
+    // Query public Mainline DHT and local mDNS for additional peers.  These are
+    // completely independent of DNS/HTTPS bootstraps, so the mesh can survive
+    // the loss of all Fluidic-operated infrastructure.
+    let network_id = std::env::var("FLUIDIC_NETWORK_ID")
+        .unwrap_or_else(|_| DEFAULT_NETWORK_ID.to_string());
+    let enable_dht = std::env::var("DHT_BOOTSTRAP")
+        .unwrap_or_else(|_| "true".to_string())
+        .eq_ignore_ascii_case("true");
+    let enable_mdns = std::env::var("MDNS_BOOTSTRAP")
+        .unwrap_or_else(|_| "true".to_string())
+        .eq_ignore_ascii_case("true");
+
+    let dht_discovery = if enable_dht {
+        match DhtDiscovery::new(&network_id) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                warn!("failed to start DHT discovery: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let dht_lookup = async {
+        let mut out = Vec::new();
+        if let Some(ref d) = dht_discovery {
+            let addrs = d.lookup_peers().await;
+            info!("dht lookup returned {} peer(s)", addrs.len());
+            out = addrs.into_iter().map(|a| a.to_string()).collect();
+        }
+        out
+    };
+
+    let mdns_lookup = if enable_mdns {
+        Some(tokio::task::spawn_blocking(move || {
+            match mdns_browse(std::time::Duration::from_secs(3)) {
+                Ok(endpoints) => {
+                    info!("mdns lookup returned {} peer(s)", endpoints.len());
+                    endpoints
+                }
+                Err(e) => {
+                    warn!("mdns browse failed: {}", e);
+                    Vec::new()
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
+    let (dht_peers, mdns_peers) = tokio::join!(dht_lookup, async {
+        match mdns_lookup {
+            Some(handle) => handle.await.unwrap_or_default(),
+            None => Vec::new(),
+        }
+    });
+    for p in dht_peers {
+        peers.push(p);
+    }
+    for p in mdns_peers {
+        add_bootstrap_peer(&mut peers, &p);
     }
 
     // Deduplicate while preserving order.
@@ -348,6 +423,32 @@ async fn main() {
         _ => unreachable!("at least one gossip transport must be active"),
     };
     api_state.set_gossip(outbound.clone());
+
+    // Announce this public node to the Mainline DHT and via mDNS so LAN peers
+    // can find it even without a DNS seed or bootstrap URL.
+    if discovery_mode == DiscoveryMode::Tcp && !public_endpoint.is_empty() {
+        let dht_port = bind_addr.port();
+        if let Some(dht) = dht_discovery.clone() {
+            tokio::spawn(async move {
+                dht.announce_peer(dht_port).await;
+            });
+        }
+        if let Some(ip) = local_announce_ip(bind_addr) {
+            let instance_name = format!("fluidic-{}", hex::encode(&id[..8]));
+            match mdns_announce(&instance_name, &public_endpoint, ip, dht_port) {
+                Ok(daemon) => {
+                    tokio::task::spawn_blocking(move || {
+                        // Hold the daemon alive for the process lifetime.
+                        let _ = daemon;
+                        loop {
+                            std::thread::park();
+                        }
+                    });
+                }
+                Err(e) => warn!("mdns announce failed: {}", e),
+            }
+        }
+    }
 
     // Build the local operator's stake announcement.  We re-announce it
     // reliably on an interval so peers that connect after we start still learn
@@ -657,7 +758,7 @@ async fn main() {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum DiscoveryMode {
     Tcp,
     WebSocket,
