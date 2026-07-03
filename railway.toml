@@ -1,6 +1,6 @@
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "docker/Dockerfile"
+dockerfilePath = "docker/Dockerfile.railway"
 
 [deploy]
 startCommand = "sh -c 'API_PORT=${PORT:-8080} /app/mesh_node'"
