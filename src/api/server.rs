@@ -111,6 +111,8 @@ pub async fn start_api_server(state: Arc<ApiState>, port: u16) -> Result<(), Str
                     None,
                 )?;
                 socket.set_reuse_address(true)?;
+                #[cfg(target_os = "linux")]
+                socket.set_reuse_port(true)?;
                 socket.bind(&addr.into())?;
                 socket.listen(128)?;
                 Ok::<_, std::io::Error>(std::net::TcpListener::from(socket))
