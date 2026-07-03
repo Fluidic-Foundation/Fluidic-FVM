@@ -1,4 +1,6 @@
 use crate::crypto::Signal;
+use crate::network::discovery::PeerAnnouncement;
+use crate::network::directory::PeerDirectory;
 use crate::network::node::encode_packet;
 use bytes::{Buf, Bytes, BytesMut};
 use std::collections::HashSet;
@@ -16,6 +18,9 @@ const AUTH_CHALLENGE: &[u8] = b"fluidic:gossip:auth:v1";
 /// Maximum serialized phase-shift size.
 const MAX_PACKET_SIZE: usize = 64 * 1024;
 
+/// How many peer announcements we forward in one batch.
+const PEER_EXCHANGE_BATCH_SIZE: usize = 16;
+
 /// A TCP-based gossip peer. Each connection is a bidirectional length-prefixed
 /// stream of `Signal` messages.
 pub struct TcpGossipNode {
@@ -26,23 +31,47 @@ pub struct TcpGossipNode {
     peer_tx: mpsc::Sender<SocketAddr>,
     /// Receive channel for inbound phase-shifts from all connected peers.
     pub inbound: mpsc::Receiver<Signal>,
+    /// Optional local announcement broadcast to peers on connect.
+    local_announcement: Option<PeerAnnouncement>,
+    /// Shared directory used to sample peers for exchange.
+    peer_directory: Option<PeerDirectory>,
 }
 
 impl TcpGossipNode {
     pub async fn bind(addr: SocketAddr, psk: Option<[u8; 32]>) -> std::io::Result<Self> {
+        Self::bind_with_discovery(addr, psk, None, None).await
+    }
+
+    /// Bind the gossip socket and enable peer exchange.
+    pub async fn bind_with_discovery(
+        addr: SocketAddr,
+        psk: Option<[u8; 32]>,
+        local_announcement: Option<PeerAnnouncement>,
+        peer_directory: Option<PeerDirectory>,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         let (outbound_tx, outbound_rx) = mpsc::channel(4096);
         let (peer_tx, peer_rx) = mpsc::channel(64);
         let (inbound_tx, inbound_rx) = mpsc::channel(4096);
         let local_addr = listener.local_addr()?;
 
-        tokio::spawn(run_gossip(listener, inbound_tx, outbound_rx, peer_rx, psk));
+        tokio::spawn(run_gossip(
+            listener,
+            inbound_tx,
+            outbound_rx,
+            peer_rx,
+            psk,
+            local_announcement.clone(),
+            peer_directory.clone(),
+        ));
 
         Ok(Self {
             local_addr,
             outbound: outbound_tx,
             peer_tx,
             inbound: inbound_rx,
+            local_announcement,
+            peer_directory,
         })
     }
 
@@ -71,6 +100,8 @@ async fn run_gossip(
     mut outbound_rx: mpsc::Receiver<Signal>,
     mut peer_rx: mpsc::Receiver<SocketAddr>,
     psk: Option<[u8; 32]>,
+    local_announcement: Option<PeerAnnouncement>,
+    peer_directory: Option<PeerDirectory>,
 ) {
     let (writer_tx, mut writer_rx) = mpsc::channel::<WriteHalf<TcpStream>>(64);
     let dial_peers: Arc<Mutex<HashSet<SocketAddr>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -86,6 +117,8 @@ async fn run_gossip(
     let tx = writer_tx.clone();
     let inbound = inbound_tx.clone();
     let inbound_psk = auth_proof;
+    let inbound_local_announcement = local_announcement.clone();
+    let inbound_peer_directory = peer_directory.clone();
     tokio::spawn(async move {
         loop {
             match listener.accept().await {
@@ -93,7 +126,6 @@ async fn run_gossip(
                     info!("accepted connection from {}", addr);
                     let (read, write) = tokio::io::split(stream);
                     if let Some(proof) = inbound_psk {
-                        // Inbound peers must authenticate before we accept signals.
                         tokio::spawn(handshake_inbound(
                             read,
                             write,
@@ -101,10 +133,18 @@ async fn run_gossip(
                             proof,
                             tx.clone(),
                             inbound.clone(),
+                            inbound_local_announcement.clone(),
+                            inbound_peer_directory.clone(),
                         ));
                     } else {
                         let _ = tx.send(write).await;
-                        tokio::spawn(read_loop(read, addr, inbound.clone()));
+                        tokio::spawn(read_loop(
+                            read,
+                            addr,
+                            inbound.clone(),
+                            inbound_local_announcement.clone(),
+                            inbound_peer_directory.clone(),
+                        ));
                     }
                 }
                 Err(e) => {
@@ -120,13 +160,15 @@ async fn run_gossip(
     let dial_peers_task = dial_peers.clone();
     let active_peers_task = active_peers.clone();
     let outbound_psk = auth_proof;
+    let outbound_local_announcement = local_announcement.clone();
+    let outbound_peer_directory = peer_directory.clone();
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(5));
         loop {
             tokio::select! {
                 Some(peer) = peer_rx.recv() => {
                     dial_peers_task.lock().unwrap().insert(peer);
-                    try_connect(peer, tx.clone(), inbound.clone(), active_peers_task.clone(), outbound_psk).await;
+                    try_connect(peer, tx.clone(), inbound.clone(), active_peers_task.clone(), outbound_psk, outbound_local_announcement.clone(), outbound_peer_directory.clone()).await;
                 }
                 _ = ticker.tick() => {
                     let to_retry: Vec<SocketAddr> = {
@@ -135,7 +177,7 @@ async fn run_gossip(
                         dial.difference(&active).copied().collect()
                     };
                     for peer in to_retry {
-                        try_connect(peer, tx.clone(), inbound.clone(), active_peers_task.clone(), outbound_psk).await;
+                        try_connect(peer, tx.clone(), inbound.clone(), active_peers_task.clone(), outbound_psk, outbound_local_announcement.clone(), outbound_peer_directory.clone()).await;
                     }
                 }
                 else => break,
@@ -183,6 +225,8 @@ async fn try_connect(
     inbound_tx: mpsc::Sender<Signal>,
     active_peers: Arc<Mutex<HashSet<SocketAddr>>>,
     auth_proof: Option<[u8; 32]>,
+    local_announcement: Option<PeerAnnouncement>,
+    peer_directory: Option<PeerDirectory>,
 ) {
     {
         let active = active_peers.lock().unwrap();
@@ -203,11 +247,18 @@ async fn try_connect(
                 }
             }
 
+            // Send peer exchange immediately after auth (or first, if no auth).
+            send_peer_announce(&mut write,
+                local_announcement.clone(),
+                peer_directory.as_ref(),
+                Some(&peer.to_string()),
+            ).await;
+
             let _ = writer_tx.send(write).await;
             active_peers.lock().unwrap().insert(peer);
             let active = active_peers.clone();
             tokio::spawn(async move {
-                read_loop(read, peer, inbound_tx).await;
+                read_loop(read, peer, inbound_tx, local_announcement, peer_directory).await;
                 active.lock().unwrap().remove(&peer);
                 info!("peer {} disconnected, will retry", peer);
             });
@@ -227,6 +278,45 @@ async fn send_auth(writer: &mut WriteHalf<TcpStream>, proof: [u8; 32]) -> std::i
     writer.flush().await
 }
 
+async fn send_peer_announce(
+    writer: &mut WriteHalf<TcpStream>,
+    local_announcement: Option<PeerAnnouncement>,
+    peer_directory: Option<&PeerDirectory>,
+    exclude_endpoint: Option<&str>,
+) {
+    let mut announcements = Vec::with_capacity(PEER_EXCHANGE_BATCH_SIZE);
+    if let Some(local) = local_announcement {
+        if local.ttl > 0 {
+            announcements.push(local);
+        }
+    }
+    if let Some(dir) = peer_directory {
+        let sample = dir.sample_for_forward(
+            PEER_EXCHANGE_BATCH_SIZE.saturating_sub(announcements.len()),
+            exclude_endpoint,
+        );
+        let forwarded: Vec<PeerAnnouncement> = sample
+            .into_iter()
+            .filter_map(|mut ann| {
+                if ann.ttl == 0 {
+                    return None;
+                }
+                ann.ttl = ann.ttl.saturating_sub(1);
+                Some(ann)
+            })
+            .collect();
+        announcements.extend(forwarded);
+    }
+    if announcements.is_empty() {
+        return;
+    }
+    let signal = Signal::PeerAnnounce(announcements);
+    if let Ok(packet) = encode_packet(&signal) {
+        let _ = writer.write_all(&packet).await;
+        let _ = writer.flush().await;
+    }
+}
+
 async fn handshake_inbound(
     mut read: ReadHalf<TcpStream>,
     write: WriteHalf<TcpStream>,
@@ -234,6 +324,8 @@ async fn handshake_inbound(
     expected_proof: [u8; 32],
     writer_tx: mpsc::Sender<WriteHalf<TcpStream>>,
     inbound_tx: mpsc::Sender<Signal>,
+    local_announcement: Option<PeerAnnouncement>,
+    peer_directory: Option<PeerDirectory>,
 ) {
     match read_one_signal(&mut read).await {
         Some(Signal::Auth { proof }) => {
@@ -243,7 +335,7 @@ async fn handshake_inbound(
             }
             info!("inbound peer {} authenticated", addr);
             let _ = writer_tx.send(write).await;
-            read_loop(read, addr, inbound_tx).await;
+            read_loop(read, addr, inbound_tx, local_announcement, peer_directory).await;
         }
         Some(other) => {
             warn!(
@@ -268,6 +360,7 @@ fn signal_name(signal: &Signal) -> &'static str {
         Signal::Pong { .. } => "Pong",
         Signal::Certificate(_) => "Certificate",
         Signal::Auth { .. } => "Auth",
+        Signal::PeerAnnounce(_) => "PeerAnnounce",
     }
 }
 
@@ -298,6 +391,8 @@ async fn read_loop(
     mut read: ReadHalf<TcpStream>,
     addr: SocketAddr,
     inbound_tx: mpsc::Sender<Signal>,
+    _local_announcement: Option<PeerAnnouncement>,
+    _peer_directory: Option<PeerDirectory>,
 ) {
     let mut buf = BytesMut::with_capacity(8 * 1024);
     loop {

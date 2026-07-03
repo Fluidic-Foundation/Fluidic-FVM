@@ -1,5 +1,6 @@
 use crate::crypto::keys::{AccountId, KeyPair};
 use crate::field::coordinates::Coordinate;
+use crate::network::discovery::PeerAnnouncement;
 use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -319,6 +320,9 @@ pub enum Signal {
     /// Gossip authentication handshake. Sent immediately after connecting.
     /// The proof is a keyed hash proving knowledge of the shared network key.
     Auth { proof: [u8; 32] },
+    /// One or more signed peer endpoint announcements exchanged after
+    /// handshake so nodes can discover peers without a central registry.
+    PeerAnnounce(Vec<PeerAnnouncement>),
 }
 
 impl Signal {
@@ -353,6 +357,14 @@ impl Signal {
             }
             Signal::Certificate(c) => c.hash(),
             Signal::Auth { proof } => *proof,
+            Signal::PeerAnnounce(anns) => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(b"fluidic:signal:peer-announce:v1");
+                for ann in anns {
+                    hasher.update(&ann.hash());
+                }
+                hasher.finalize().into()
+            }
         }
     }
 
@@ -365,6 +377,9 @@ impl Signal {
             Signal::Ping { timestamp_ns, .. } | Signal::Pong { timestamp_ns, .. } => *timestamp_ns,
             Signal::Certificate(c) => c.timestamp_ns,
             Signal::Auth { .. } => 0,
+            Signal::PeerAnnounce(anns) => {
+                anns.first().map(|a| a.timestamp_ns).unwrap_or(0)
+            }
         }
     }
 }

@@ -2,6 +2,7 @@ use crate::consensus::{Oscillator, ShiftStatus, SynthesisResult};
 use crate::crypto::{
     AccountId, KeyPair, RegistrationShift, Signal, StakeShift, StatefulShift, VectorClock,
 };
+use crate::network::PeerDirectory;
 use ed25519_dalek::VerifyingKey;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -74,6 +75,8 @@ pub struct ApiState {
     pub operator_keypair: Mutex<Option<KeyPair>>,
     /// Recently submitted shifts for the explorer.
     pub recent_shifts: Arc<Mutex<Vec<RecentShift>>>,
+    /// Signed peer endpoint directory used for decentralized discovery.
+    pub peer_directory: PeerDirectory,
 }
 
 impl ApiState {
@@ -98,6 +101,7 @@ impl ApiState {
             gossip: Arc::new(Mutex::new(None)),
             operator_keypair: Mutex::new(None),
             recent_shifts: Arc::new(Mutex::new(Vec::with_capacity(200))),
+            peer_directory: PeerDirectory::new(),
         };
 
         // Seed the DEX pool.
@@ -257,7 +261,6 @@ impl ApiState {
         }
     }
 
-    /// Update the network latency estimate (called by gossip probe tasks).
     pub fn record_network_latency_ms(&self, ms: f64) {
         let mut stats = self.stats.lock().unwrap();
         // Simple exponential moving average with alpha = 0.2.
@@ -266,6 +269,10 @@ impl ApiState {
         } else {
             stats.network_ms = stats.network_ms * 0.8 + ms * 0.2;
         }
+    }
+
+    pub fn load_peer_directory(&mut self, path: &std::path::Path) {
+        self.peer_directory = PeerDirectory::load(path);
     }
 }
 
