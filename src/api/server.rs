@@ -96,27 +96,50 @@ pub async fn start_api_server(state: Arc<ApiState>, port: u16) -> Result<(), Str
         .parse()
         .map_err(|e| format!("invalid API address: {}", e))?;
 
-    // Retry binding to handle rolling deploys where the previous container
-    // still holds the assigned port for a few seconds.
+    // Retry binding with SO_REUSEADDR. Railway (and similar platforms) may
+    // keep the previous container's socket alive briefly during rolling
+    // deploys, so we both set the reuse flag and retry a few times.
     let listener = {
+        let mut last_err = None;
         let mut retries = 0;
+        const MAX_RETRIES: u32 = 30;
         loop {
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => break Ok(listener),
-                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && retries < 15 => {
+            match tokio::task::spawn_blocking(move || {
+                let socket = socket2::Socket::new(
+                    socket2::Domain::for_address(addr),
+                    socket2::Type::STREAM,
+                    None,
+                )?;
+                socket.set_reuse_address(true)?;
+                socket.bind(&addr.into())?;
+                socket.listen(128)?;
+                Ok::<_, std::io::Error>(std::net::TcpListener::from(socket))
+            })
+            .await
+            {
+                Ok(Ok(listener)) => break Ok(listener),
+                Ok(Err(e)) => {
+                    last_err = Some(e);
                     retries += 1;
+                    if retries > MAX_RETRIES {
+                        break Err(last_err.unwrap());
+                    }
                     tracing::warn!(
-                        "API port {} in use, retrying in 2s (attempt {}/15)",
+                        "API port {} in use, retrying in 2s (attempt {}/{})",
                         port,
-                        retries
+                        retries,
+                        MAX_RETRIES
                     );
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
-                Err(e) => break Err(e),
+                Err(e) => break Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
             }
         }
     }
     .map_err(|e| format!("failed to bind API server: {}", e))?;
+
+    let listener = tokio::net::TcpListener::from_std(listener)
+        .map_err(|e| format!("failed to convert API listener: {}", e))?;
 
     tracing::info!("API server listening on http://{}", addr);
 
