@@ -96,9 +96,27 @@ pub async fn start_api_server(state: Arc<ApiState>, port: u16) -> Result<(), Str
         .parse()
         .map_err(|e| format!("invalid API address: {}", e))?;
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| format!("failed to bind API server: {}", e))?;
+    // Retry binding to handle rolling deploys where the previous container
+    // still holds the assigned port for a few seconds.
+    let listener = {
+        let mut retries = 0;
+        loop {
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(listener) => break Ok(listener),
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && retries < 15 => {
+                    retries += 1;
+                    tracing::warn!(
+                        "API port {} in use, retrying in 2s (attempt {}/15)",
+                        port,
+                        retries
+                    );
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                Err(e) => break Err(e),
+            }
+        }
+    }
+    .map_err(|e| format!("failed to bind API server: {}", e))?;
 
     tracing::info!("API server listening on http://{}", addr);
 
