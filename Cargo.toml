@@ -47,6 +47,8 @@ base64 = "0.22.1"
 lazy_static = "1.5.0"
 hickory-resolver = "0.24"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+mainline = "7"
+mdns-sd = "0.20"
 
 [dev-dependencies]
 tokio-test = "0.4"
