@@ -4,11 +4,15 @@ use fluidic::consensus::Oscillator;
 use fluidic::crypto::keys::KeyPair;
 use fluidic::crypto::{CommutativeShift, Signal, StakeShift, DEFAULT_DEX_DOMAIN};
 use fluidic::field::coordinates::Coordinate;
-use fluidic::network::TcpGossipNode;
+use fluidic::network::{
+    fetch_bootstrap_url, mdns_announce, mdns_browse, resolve_txt_seeds, DhtDiscovery,
+    EndpointScheme, PeerAnnouncement, TcpGossipNode, WsGossipNode, DEFAULT_NETWORK_ID,
+};
 use fluidic::persistence;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::time::interval;
 use tracing::{info, trace, warn};
 
@@ -23,7 +27,14 @@ fn load_peer_cache() -> Vec<String> {
         return Vec::new();
     }
     match std::fs::read_to_string(&path) {
-        Ok(json) => serde_json::from_str::<Vec<String>>(&json).unwrap_or_default(),
+        Ok(json) => {
+            // Support both old flat endpoint list and new directory JSON.
+            if json.trim().starts_with('[') {
+                serde_json::from_str::<Vec<String>>(&json).unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        }
         Err(e) => {
             warn!("failed to read peer cache {}: {}", path.display(), e);
             Vec::new()
@@ -53,6 +64,29 @@ async fn resolve_dns_seed(seed: &str) -> Vec<std::net::SocketAddr> {
             warn!("failed to resolve DNS seed {}: {}", seed, e);
             Vec::new()
         }
+    }
+}
+
+/// Normalize a signed bootstrap endpoint into a string the connection loop can
+/// dial.  TCP endpoints are reduced to `host:port`; WebSocket endpoints are
+/// kept as a full URL.
+fn add_bootstrap_peer(peers: &mut Vec<String>, endpoint: &str) {
+    match EndpointScheme::parse(endpoint) {
+        Some((EndpointScheme::Tcp, rest)) => peers.push(rest.to_string()),
+        Some((EndpointScheme::Ws | EndpointScheme::Wss, _)) => peers.push(endpoint.to_string()),
+        None if endpoint.contains(':') => peers.push(endpoint.to_string()),
+        None => warn!("ignoring malformed bootstrap endpoint: {}", endpoint),
+    }
+}
+
+/// Return the local IP to advertise over mDNS.  Unspecified and loopback
+/// addresses are skipped because they don't help LAN peers reach us.
+fn local_announce_ip(bind_addr: SocketAddr) -> Option<std::net::IpAddr> {
+    let ip = bind_addr.ip();
+    if ip.is_unspecified() || ip.is_loopback() {
+        None
+    } else {
+        Some(ip)
     }
 }
 
@@ -117,11 +151,97 @@ async fn main() {
     if let Ok(seed) = std::env::var("SEED_DNS") {
         let seed = seed.trim();
         if !seed.is_empty() {
-            info!("resolving DNS seed {}", seed);
+            info!("resolving legacy DNS seed {}", seed);
             for addr in resolve_dns_seed(seed).await {
                 peers.push(addr.to_string());
             }
         }
+    }
+
+    // Resolve signed genesis bootstrap records from DNS TXT and/or a URL.
+    // These endpoints are signed by the hybrid genesis operators so nodes can
+    // join the mesh even if the hardcoded peer list is empty or stale.
+    if let Ok(dns_seed) = std::env::var("BOOTSTRAP_DNS") {
+        let dns_seed = dns_seed.trim();
+        if !dns_seed.is_empty() {
+            info!("resolving signed bootstrap DNS TXT records for {}", dns_seed);
+            for endpoint in resolve_txt_seeds(dns_seed).await {
+                add_bootstrap_peer(&mut peers, &endpoint);
+            }
+        }
+    }
+    if let Ok(url) = std::env::var("BOOTSTRAP_URL") {
+        let url = url.trim();
+        if !url.is_empty() {
+            info!("fetching signed bootstrap records from {}", url);
+            for endpoint in fetch_bootstrap_url(url).await {
+                add_bootstrap_peer(&mut peers, &endpoint);
+            }
+        }
+    }
+
+    // Query public Mainline DHT and local mDNS for additional peers.  These are
+    // completely independent of DNS/HTTPS bootstraps, so the mesh can survive
+    // the loss of all Fluidic-operated infrastructure.
+    let network_id = std::env::var("FLUIDIC_NETWORK_ID")
+        .unwrap_or_else(|_| DEFAULT_NETWORK_ID.to_string());
+    let enable_dht = std::env::var("DHT_BOOTSTRAP")
+        .unwrap_or_else(|_| "true".to_string())
+        .eq_ignore_ascii_case("true");
+    let enable_mdns = std::env::var("MDNS_BOOTSTRAP")
+        .unwrap_or_else(|_| "true".to_string())
+        .eq_ignore_ascii_case("true");
+
+    let dht_discovery = if enable_dht {
+        match DhtDiscovery::new(&network_id) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                warn!("failed to start DHT discovery: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let dht_lookup = async {
+        let mut out = Vec::new();
+        if let Some(ref d) = dht_discovery {
+            let addrs = d.lookup_peers().await;
+            info!("dht lookup returned {} peer(s)", addrs.len());
+            out = addrs.into_iter().map(|a| a.to_string()).collect();
+        }
+        out
+    };
+
+    let mdns_lookup = if enable_mdns {
+        Some(tokio::task::spawn_blocking(move || {
+            match mdns_browse(std::time::Duration::from_secs(3)) {
+                Ok(endpoints) => {
+                    info!("mdns lookup returned {} peer(s)", endpoints.len());
+                    endpoints
+                }
+                Err(e) => {
+                    warn!("mdns browse failed: {}", e);
+                    Vec::new()
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
+    let (dht_peers, mdns_peers) = tokio::join!(dht_lookup, async {
+        match mdns_lookup {
+            Some(handle) => handle.await.unwrap_or_default(),
+            None => Vec::new(),
+        }
+    });
+    for p in dht_peers {
+        peers.push(p);
+    }
+    for p in mdns_peers {
+        add_bootstrap_peer(&mut peers, &p);
     }
 
     // Deduplicate while preserving order.
@@ -143,9 +263,25 @@ async fn main() {
         .parse()
         .expect("GENERATOR_INTERVAL_MS must be a number");
 
+    let public_endpoint = std::env::var("PUBLIC_ENDPOINT").unwrap_or_else(|_| {
+        // Default to the bind address if it looks like a public IP; otherwise
+        // assume the node is a leaf and should use WebSocket gossip.
+        if bind_addr.ip().is_unspecified() || bind_addr.ip().is_loopback() {
+            String::new()
+        } else {
+            format!("tcp://{}", bind_addr)
+        }
+    });
+
+    let discovery_mode = match EndpointScheme::parse(&public_endpoint) {
+        Some((EndpointScheme::Tcp, _)) => DiscoveryMode::Tcp,
+        Some((EndpointScheme::Ws | EndpointScheme::Wss, _)) => DiscoveryMode::WebSocket,
+        None => DiscoveryMode::WebSocket,
+    };
+
     info!(
-        "starting mesh node id={} bind={} peers={:?}",
-        id_str, bind_addr, peers
+        "starting mesh node id={} bind={} public_endpoint={} discovery={:?} peers={:?}",
+        id_str, bind_addr, public_endpoint, discovery_mode, peers
     );
 
     // Derive a deterministic local keypair from the oscillator id so the node
@@ -164,9 +300,6 @@ async fn main() {
     }
 
     let oscillator = Arc::new(oscillator);
-
-    // Membership is dynamic: any node can announce its stake via gossiped
-    // StakeShift messages. No static operator registry is loaded.
 
     // Seed genesis balance for the local operator on first boot and lock it as
     // stake so a fresh node is immediately eligible to synthesize certificates.
@@ -195,7 +328,10 @@ async fn main() {
         warn!("failed to lock genesis stake for {}", local_account);
     }
 
-    let api_state = Arc::new(ApiState::new(oscillator.clone()));
+    let mut api_state = Arc::new(ApiState::new(oscillator.clone()));
+    Arc::get_mut(&mut api_state)
+        .unwrap()
+        .load_peer_directory(&peer_cache_path());
     api_state.set_operator_keypair(local_keypair.clone());
     api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
 
@@ -233,11 +369,86 @@ async fn main() {
     if psk.is_some() {
         info!("gossip authentication enabled via FLUIDIC_PSK");
     }
-    let gossip = TcpGossipNode::bind(bind_addr, psk)
-        .await
-        .expect("failed to bind gossip socket");
-    info!("gossip bound to {}", gossip.local_addr);
-    api_state.set_gossip(gossip.outbound.clone());
+
+    // Build the local peer announcement signed by the operator keypair.
+    let local_announcement = if public_endpoint.is_empty() {
+        None
+    } else {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        Some(PeerAnnouncement::sign(
+            &local_keypair,
+            &public_endpoint,
+            ts,
+            3,
+        ))
+    };
+    if let Some(ref ann) = local_announcement {
+        api_state.peer_directory.insert_announcements(&[ann.clone()],
+            None,
+        );
+    }
+
+    // Bind gossip transport: TCP for public nodes, WebSocket for leaf nodes.
+    let (mut gossip, mut ws_gossip) = match discovery_mode {
+        DiscoveryMode::Tcp => {
+            let gossip = TcpGossipNode::bind_with_discovery(
+                bind_addr,
+                psk,
+                local_announcement.clone(),
+                Some(api_state.peer_directory.clone()),
+            )
+            .await
+            .expect("failed to bind gossip socket");
+            info!("gossip bound to {}", gossip.local_addr);
+            (Some(gossip), None)
+        }
+        DiscoveryMode::WebSocket => {
+            let ws = WsGossipNode::new_with_discovery(
+                psk,
+                local_announcement.clone(),
+                Some(api_state.peer_directory.clone()),
+            )
+            .await;
+            info!("websocket gossip transport ready");
+            (None, Some(ws))
+        }
+    };
+
+    let outbound: mpsc::Sender<Signal> = match (&gossip, &ws_gossip) {
+        (Some(g), _) => g.outbound.clone(),
+        (_, Some(w)) => w.outbound.clone(),
+        _ => unreachable!("at least one gossip transport must be active"),
+    };
+    api_state.set_gossip(outbound.clone());
+
+    // Announce this public node to the Mainline DHT and via mDNS so LAN peers
+    // can find it even without a DNS seed or bootstrap URL.
+    if discovery_mode == DiscoveryMode::Tcp && !public_endpoint.is_empty() {
+        let dht_port = bind_addr.port();
+        if let Some(dht) = dht_discovery.clone() {
+            tokio::spawn(async move {
+                dht.announce_peer(dht_port).await;
+            });
+        }
+        if let Some(ip) = local_announce_ip(bind_addr) {
+            let instance_name = format!("fluidic-{}", hex::encode(&id[..8]));
+            match mdns_announce(&instance_name, &public_endpoint, ip, dht_port) {
+                Ok(daemon) => {
+                    tokio::task::spawn_blocking(move || {
+                        // Hold the daemon alive for the process lifetime.
+                        let _ = daemon;
+                        loop {
+                            std::thread::park();
+                        }
+                    });
+                }
+                Err(e) => warn!("mdns announce failed: {}", e),
+            }
+        }
+    }
 
     // Build the local operator's stake announcement.  We re-announce it
     // reliably on an interval so peers that connect after we start still learn
@@ -253,7 +464,7 @@ async fn main() {
         timestamp_ns,
     ));
 
-    let announce_outbound = gossip.outbound.clone();
+    let announce_outbound = outbound.clone();
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(3));
         loop {
@@ -265,32 +476,80 @@ async fn main() {
         }
     });
 
-    // Connect to peers (resolve DNS names like mesh-node-1.mesh-node:7000).
+    // Connect to peers.  Endpoints may be raw TCP host:port, tcp://host:port, or
+    // a full ws/wss URL.  Unknown strings are treated as TCP host:port for
+    // backwards compatibility.
     let mut peer_addrs: Vec<SocketAddr> = Vec::new();
     for peer in &peers {
-        match tokio::net::lookup_host(peer).await {
-            Ok(mut addrs) => {
-                if let Some(addr) = addrs.next() {
-                    peer_addrs.push(addr);
-                    if let Err(e) = gossip.add_peer(addr).await {
-                        warn!("failed to queue peer {}: {}", addr, e);
+        match EndpointScheme::parse(peer) {
+            Some((EndpointScheme::Tcp, rest)) => {
+                match tokio::net::lookup_host(rest).await {
+                    Ok(mut addrs) => {
+                        if let Some(addr) = addrs.next() {
+                            peer_addrs.push(addr);
+                            if let Some(ref g) = gossip {
+                                if let Err(e) = g.add_peer(addr).await {
+                                    warn!("failed to queue peer {}: {}", addr, e);
+                                }
+                            }
+                        } else {
+                            warn!("peer {} resolved to no addresses", peer);
+                        }
                     }
-                } else {
-                    warn!("peer {} resolved to no addresses", peer);
+                    Err(e) => warn!("failed to resolve peer {}: {}", peer, e),
                 }
             }
-            Err(e) => warn!("failed to resolve peer {}: {}", peer, e),
+            Some((EndpointScheme::Ws | EndpointScheme::Wss, _)) => {
+                if let Some(ref w) = ws_gossip {
+                    if let Err(e) = w.add_peer(peer.clone()).await {
+                        warn!("failed to queue websocket peer {}: {}", peer, e);
+                    }
+                } else {
+                    warn!("ignoring websocket peer {} on a TCP-only node", peer);
+                }
+            }
+            None => {
+                match tokio::net::lookup_host(peer).await {
+                    Ok(mut addrs) => {
+                        if let Some(addr) = addrs.next() {
+                            peer_addrs.push(addr);
+                            if let Some(ref g) = gossip {
+                                if let Err(e) = g.add_peer(addr).await {
+                                    warn!("failed to queue peer {}: {}", addr, e);
+                                }
+                            }
+                        } else {
+                            warn!("peer {} resolved to no addresses", peer);
+                        }
+                    }
+                    Err(e) => warn!("failed to resolve peer {}: {}", peer, e),
+                }
+            }
         }
     }
     info!("queued {} bootstrap peer(s)", peer_addrs.len());
-    save_peer_cache(&peers);
+
+    // Periodically save peer directory cache.
+    let cache_dir = std::path::PathBuf::from(&data_dir);
+    let cache_peer_dir = api_state.peer_directory.clone();
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(30));
+        loop {
+            ticker.tick().await;
+            cache_peer_dir.save(&cache_dir.join("peers.json"));
+        }
+    });
 
 
     // Ingest loop: apply incoming phase-shifts to the oscillator.
     let osc_ingest = oscillator.clone();
     let api_state_ingest = api_state.clone();
-    let ping_outbound = gossip.outbound.clone();
-    let mut inbound = gossip.inbound;
+    let ping_outbound = outbound.clone();
+    let mut inbound = match (gossip.take(), ws_gossip.take()) {
+        (Some(g), _) => g.inbound,
+        (_, Some(w)) => w.inbound,
+        _ => unreachable!(),
+    };
     tokio::spawn(async move {
         while let Some(shift) = inbound.recv().await {
             match shift {
@@ -339,6 +598,9 @@ async fn main() {
                         trace!("accepted certificate for tick {} from {}", cert.tick, cert.operator);
                     }
                 }
+                Signal::PeerAnnounce(anns) => {
+                    api_state_ingest.peer_directory.insert_announcements(&anns, None);
+                }
                 Signal::Auth { .. } => {
                     // Authentication is handled at the gossip layer; once a
                     // Signal reaches the ingest loop the peer is trusted.
@@ -354,7 +616,7 @@ async fn main() {
     });
 
     // Gossip RTT probe loop.
-    let ping_sender = gossip.outbound.clone();
+    let ping_sender = outbound.clone();
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(1));
         let mut nonce = 0u64;
@@ -379,7 +641,7 @@ async fn main() {
         .unwrap_or_else(|_| "false".to_string())
         .eq_ignore_ascii_case("true");
     if enable_generator {
-        let sender = gossip.outbound.clone();
+        let sender = outbound.clone();
         let generator_key = local_keypair.clone();
         let osc_gen = oscillator.clone();
         let api_gen = api_state.clone();
@@ -454,7 +716,7 @@ async fn main() {
                 // Gossip our own certificate so peers can form a quorum.
                 let tick = oscillator.synthesis_tick.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(1);
                 if let Some(cert) = oscillator.certificates.read().unwrap().get(&tick).cloned() {
-                    if let Err(e) = gossip.outbound.try_send(Signal::Certificate(cert)) {
+                    if let Err(e) = outbound.try_send(Signal::Certificate(cert)) {
                         warn!("failed to gossip certificate: {}", e);
                     }
                 }
@@ -494,4 +756,10 @@ async fn main() {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DiscoveryMode {
+    Tcp,
+    WebSocket,
 }

@@ -72,6 +72,10 @@ impl KeyPair {
         }
     }
 
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
+    }
+
     pub fn account_id(&self) -> AccountId {
         AccountId::from_public_key(&self.signing_key.verifying_key())
     }

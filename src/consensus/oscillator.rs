@@ -276,6 +276,7 @@ impl Oscillator {
             Signal::Ping { .. } | Signal::Pong { .. } => Ok(()), // network probes, not state
             Signal::Certificate(_) => Ok(()), // certificates are applied via ingest_certificate
             Signal::Auth { .. } => Ok(()),     // gossip-layer authentication, not state
+            Signal::PeerAnnounce(_) => Ok(()), // peer discovery is handled by the gossip layer
         }
     }
 
