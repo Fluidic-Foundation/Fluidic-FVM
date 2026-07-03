@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --bin mesh_node
+RUN CARGO_BUILD_JOBS=1 cargo build --release --bin mesh_node
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates iputils-ping && rm -rf /var/lib/apt/lists/*
