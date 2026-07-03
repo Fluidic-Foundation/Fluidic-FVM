@@ -335,10 +335,14 @@ async fn main() {
     api_state.set_operator_keypair(local_keypair.clone());
     api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
 
+    // Railway (and some other hosts) provide the public HTTP port via the
+    // standard PORT variable. Use API_PORT if set explicitly, otherwise fall
+    // back to PORT, then 8080 for local runs.
     let api_port: u16 = std::env::var("API_PORT")
+        .or_else(|_| std::env::var("PORT"))
         .unwrap_or_else(|_| "8080".to_string())
         .parse()
-        .expect("API_PORT must be a number");
+        .expect("API_PORT/PORT must be a number");
     // Run the API server on a dedicated OS thread with its own current-thread
     // Tokio runtime so HTTP handling is isolated from consensus work.
     let api_state_for_server = api_state.clone();
