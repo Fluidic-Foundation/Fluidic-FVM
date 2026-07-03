@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "docker/Dockerfile"
+
+[deploy]
+startCommand = "sh -c 'API_PORT=${PORT:-8080} /app/mesh_node'"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 60
