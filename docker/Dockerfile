@@ -13,4 +13,6 @@ RUN apt-get update && apt-get install -y ca-certificates iputils-ping && rm -rf 
 WORKDIR /app
 COPY --from=builder /usr/src/fluidic/target/release/mesh_node /app/mesh_node
 EXPOSE 7000 8080
-ENTRYPOINT ["/app/mesh_node"]
+# Use CMD (not ENTRYPOINT) so Railway's start command overrides the default
+# command cleanly instead of being passed as arguments to mesh_node.
+CMD ["/app/mesh_node"]

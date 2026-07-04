@@ -343,6 +343,12 @@ async fn main() {
         .unwrap_or_else(|_| "8080".to_string())
         .parse()
         .expect("API_PORT/PORT must be a number");
+    info!(
+        "starting API server on port {} (API_PORT={:?}, PORT={:?})",
+        api_port,
+        std::env::var("API_PORT").ok(),
+        std::env::var("PORT").ok()
+    );
     // Run the API server on a dedicated OS thread with its own current-thread
     // Tokio runtime so HTTP handling is isolated from consensus work.
     let api_state_for_server = api_state.clone();
