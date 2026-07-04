@@ -182,7 +182,8 @@ async fn main() {
 
     // Query public Mainline DHT and local mDNS for additional peers.  These are
     // completely independent of DNS/HTTPS bootstraps, so the mesh can survive
-    // the loss of all Fluidic-operated infrastructure.
+    // the loss of all Fluidic-operated infrastructure.  Run them concurrently
+    // with API startup so the health endpoint is available as soon as possible.
     let network_id = std::env::var("FLUIDIC_NETWORK_ID")
         .unwrap_or_else(|_| DEFAULT_NETWORK_ID.to_string());
     let enable_dht = std::env::var("DHT_BOOTSTRAP")
@@ -204,17 +205,20 @@ async fn main() {
         None
     };
 
-    let dht_lookup = async {
-        let mut out = Vec::new();
-        if let Some(ref d) = dht_discovery {
-            let addrs = d.lookup_peers().await;
-            info!("dht lookup returned {} peer(s)", addrs.len());
-            out = addrs.into_iter().map(|a| a.to_string()).collect();
-        }
-        out
+    let dht_lookup_task = {
+        let dht_discovery = dht_discovery.clone();
+        tokio::spawn(async move {
+            let mut out = Vec::new();
+            if let Some(ref d) = dht_discovery {
+                let addrs = d.lookup_peers().await;
+                info!("dht lookup returned {} peer(s)", addrs.len());
+                out = addrs.into_iter().map(|a| a.to_string()).collect();
+            }
+            out
+        })
     };
 
-    let mdns_lookup = if enable_mdns {
+    let mdns_lookup_task = if enable_mdns {
         Some(tokio::task::spawn_blocking(move || {
             match mdns_browse(std::time::Duration::from_secs(3)) {
                 Ok(endpoints) => {
@@ -230,23 +234,6 @@ async fn main() {
     } else {
         None
     };
-
-    let (dht_peers, mdns_peers) = tokio::join!(dht_lookup, async {
-        match mdns_lookup {
-            Some(handle) => handle.await.unwrap_or_default(),
-            None => Vec::new(),
-        }
-    });
-    for p in dht_peers {
-        peers.push(p);
-    }
-    for p in mdns_peers {
-        add_bootstrap_peer(&mut peers, &p);
-    }
-
-    // Deduplicate while preserving order.
-    let mut seen = std::collections::HashSet::new();
-    peers.retain(|p| seen.insert(p.clone()));
 
     let synth_interval_ms: u64 = std::env::var("SYNTHESIS_INTERVAL_MS")
         .unwrap_or_else(|_| "1000".to_string())
@@ -278,11 +265,6 @@ async fn main() {
         Some((EndpointScheme::Ws | EndpointScheme::Wss, _)) => DiscoveryMode::WebSocket,
         None => DiscoveryMode::WebSocket,
     };
-
-    info!(
-        "starting mesh node id={} bind={} public_endpoint={} discovery={:?} peers={:?}",
-        id_str, bind_addr, public_endpoint, discovery_mode, peers
-    );
 
     // Derive a deterministic local keypair from the oscillator id so the node
     // keeps the same identity across restarts.
@@ -363,6 +345,11 @@ async fn main() {
             }
         });
     });
+
+    info!(
+        "starting mesh node id={} bind={} public_endpoint={} discovery={:?} peers={:?}",
+        id_str, bind_addr, public_endpoint, discovery_mode, peers
+    );
 
     let psk: Option<[u8; 32]> = std::env::var("FLUIDIC_PSK")
         .ok()
@@ -485,6 +472,26 @@ async fn main() {
             }
         }
     });
+
+    // Wait for concurrent peer discovery to finish before connecting.
+    let (dht_peers, mdns_peers) = tokio::join!(
+        dht_lookup_task,
+        async {
+            match mdns_lookup_task {
+                Some(handle) => handle.await.unwrap_or_default(),
+                None => Vec::new(),
+            }
+        }
+    );
+    for p in dht_peers.unwrap_or_default() {
+        peers.push(p);
+    }
+    for p in mdns_peers {
+        add_bootstrap_peer(&mut peers, &p);
+    }
+    // Deduplicate while preserving order.
+    let mut seen = std::collections::HashSet::new();
+    peers.retain(|p| seen.insert(p.clone()));
 
     // Connect to peers.  Endpoints may be raw TCP host:port, tcp://host:port, or
     // a full ws/wss URL.  Unknown strings are treated as TCP host:port for
