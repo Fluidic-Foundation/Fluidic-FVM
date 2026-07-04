@@ -52,16 +52,24 @@ fn save_peer_cache(peers: &[String]) {
     }
 }
 
-async fn resolve_dns_seed(seed: &str) -> Vec<std::net::SocketAddr> {
+/// Resolve a legacy DNS seed (host or host:port) into socket addresses with a
+/// bounded timeout so a missing/stale seed does not block node startup.
+pub async fn resolve_dns_seed(seed: &str) -> Vec<std::net::SocketAddr> {
     let host = if seed.contains(':') {
         seed.to_string()
     } else {
         format!("{}:7000", seed)
     };
-    match tokio::net::lookup_host(&host).await {
-        Ok(addrs) => addrs.collect(),
-        Err(e) => {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), tokio::net::lookup_host(&host))
+        .await
+    {
+        Ok(Ok(addrs)) => addrs.collect(),
+        Ok(Err(e)) => {
             warn!("failed to resolve DNS seed {}: {}", seed, e);
+            Vec::new()
+        }
+        Err(_) => {
+            warn!("DNS seed resolution for {} timed out", seed);
             Vec::new()
         }
     }
@@ -137,7 +145,10 @@ async fn main() {
         .parse()
         .expect("BIND_ADDR must be a valid SocketAddr");
 
-    // Build initial peer list from explicit PEERS, cached peers, and DNS seeds.
+    // Build initial peer list from explicit PEERS and cached peers immediately.
+    // DNS seed, signed DNS TXT, HTTPS bootstrap, DHT, and mDNS lookups all run
+    // concurrently with API startup so the health endpoint is available before
+    // any potentially slow network resolution finishes.
     let mut peers: Vec<String> = std::env::var("PEERS")
         .unwrap_or_default()
         .split(',')
@@ -148,37 +159,51 @@ async fn main() {
     let cached_peers = load_peer_cache();
     peers.extend(cached_peers);
 
-    if let Ok(seed) = std::env::var("SEED_DNS") {
-        let seed = seed.trim();
+    let seed_dns_task = if let Ok(seed) = std::env::var("SEED_DNS") {
+        let seed = seed.trim().to_string();
         if !seed.is_empty() {
-            info!("resolving legacy DNS seed {}", seed);
-            for addr in resolve_dns_seed(seed).await {
-                peers.push(addr.to_string());
-            }
+            Some(tokio::spawn(async move {
+                info!("resolving legacy DNS seed {}", seed);
+                resolve_dns_seed(&seed)
+                    .await
+                    .into_iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+            }))
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
-    // Resolve signed genesis bootstrap records from DNS TXT and/or a URL.
-    // These endpoints are signed by the hybrid genesis operators so nodes can
-    // join the mesh even if the hardcoded peer list is empty or stale.
-    if let Ok(dns_seed) = std::env::var("BOOTSTRAP_DNS") {
-        let dns_seed = dns_seed.trim();
+    let bootstrap_dns_task = if let Ok(dns_seed) = std::env::var("BOOTSTRAP_DNS") {
+        let dns_seed = dns_seed.trim().to_string();
         if !dns_seed.is_empty() {
-            info!("resolving signed bootstrap DNS TXT records for {}", dns_seed);
-            for endpoint in resolve_txt_seeds(dns_seed).await {
-                add_bootstrap_peer(&mut peers, &endpoint);
-            }
+            Some(tokio::spawn(async move {
+                info!("resolving signed bootstrap DNS TXT records for {}", dns_seed);
+                resolve_txt_seeds(&dns_seed).await
+            }))
+        } else {
+            None
         }
-    }
-    if let Ok(url) = std::env::var("BOOTSTRAP_URL") {
-        let url = url.trim();
+    } else {
+        None
+    };
+
+    let bootstrap_url_task = if let Ok(url) = std::env::var("BOOTSTRAP_URL") {
+        let url = url.trim().to_string();
         if !url.is_empty() {
-            info!("fetching signed bootstrap records from {}", url);
-            for endpoint in fetch_bootstrap_url(url).await {
-                add_bootstrap_peer(&mut peers, &endpoint);
-            }
+            Some(tokio::spawn(async move {
+                info!("fetching signed bootstrap records from {}", url);
+                fetch_bootstrap_url(&url).await
+            }))
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
     // Query public Mainline DHT and local mDNS for additional peers.  These are
     // completely independent of DNS/HTTPS bootstraps, so the mesh can survive
@@ -474,6 +499,32 @@ async fn main() {
     });
 
     // Wait for concurrent peer discovery to finish before connecting.
+    if let Some(task) = seed_dns_task {
+        match task.await {
+            Ok(addrs) => peers.extend(addrs),
+            Err(e) => warn!("legacy DNS seed lookup task failed: {}", e),
+        }
+    }
+    if let Some(task) = bootstrap_dns_task {
+        match task.await {
+            Ok(endpoints) => {
+                for ep in endpoints {
+                    add_bootstrap_peer(&mut peers, &ep);
+                }
+            }
+            Err(e) => warn!("bootstrap DNS TXT lookup task failed: {}", e),
+        }
+    }
+    if let Some(task) = bootstrap_url_task {
+        match task.await {
+            Ok(endpoints) => {
+                for ep in endpoints {
+                    add_bootstrap_peer(&mut peers, &ep);
+                }
+            }
+            Err(e) => warn!("bootstrap URL lookup task failed: {}", e),
+        }
+    }
     let (dht_peers, mdns_peers) = tokio::join!(
         dht_lookup_task,
         async {

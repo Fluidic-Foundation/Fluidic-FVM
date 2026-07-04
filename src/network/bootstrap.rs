@@ -8,18 +8,29 @@ const MAX_BOOTSTRAP_AGE_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 /// Resolve DNS TXT records for `seed` and return verified endpoints.
 pub async fn resolve_txt_seeds(seed: &str) -> Vec<String> {
     let records = match hickory_resolver::TokioAsyncResolver::tokio_from_system_conf() {
-        Ok(resolver) => match resolver.txt_lookup(seed).await {
-            Ok(lookup) => {
-                lookup
-                    .iter()
-                    .flat_map(|txt| txt.txt_data().iter().map(|b| String::from_utf8_lossy(b).to_string()))
-                    .collect::<Vec<_>>()
+        Ok(resolver) => {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                resolver.txt_lookup(seed),
+            )
+            .await
+            {
+                Ok(Ok(lookup)) => {
+                    lookup
+                        .iter()
+                        .flat_map(|txt| txt.txt_data().iter().map(|b| String::from_utf8_lossy(b).to_string()))
+                        .collect::<Vec<_>>()
+                }
+                Ok(Err(e)) => {
+                    warn!("DNS TXT lookup failed for {}: {}", seed, e);
+                    Vec::new()
+                }
+                Err(_) => {
+                    warn!("DNS TXT lookup for {} timed out", seed);
+                    Vec::new()
+                }
             }
-            Err(e) => {
-                warn!("DNS TXT lookup failed for {}: {}", seed, e);
-                Vec::new()
-            }
-        },
+        }
         Err(e) => {
             warn!("failed to build DNS resolver: {}", e);
             Vec::new()
