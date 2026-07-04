@@ -1,8 +1,0 @@
-[build]
-builder = "DOCKERFILE"
-dockerfilePath = "docker/Dockerfile.railway"
-
-[deploy]
-startCommand = "sh -c 'echo \"PORT=$PORT API_PORT=$API_PORT\"; API_PORT=${PORT:-8080} exec /app/mesh_node'"
-healthcheckPath = "/api/health"
-healthcheckTimeout = 60

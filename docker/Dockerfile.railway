@@ -1,5 +1,0 @@
-FROM ghcr.io/fluidic-foundation/fluidic-fvm/mesh-node:latest
-# Clear the base image entrypoint so Railway's start command (or the CMD
-# below) is the only thing executed inside the container.
-ENTRYPOINT []
-CMD ["sh", "-c", "echo \"PORT=$PORT API_PORT=$API_PORT\"; API_PORT=${PORT:-8080} exec /app/mesh_node"]
