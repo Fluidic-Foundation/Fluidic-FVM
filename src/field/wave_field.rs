@@ -13,8 +13,7 @@ pub const WAVE_PRECISION: u128 = 1_000_000_000_000;
 /// Each balance carries the metabolic-decay bookkeeping needed to apply
 /// `B(t) = B(0) * e^(-λt)` lazily: `last_decay_tick` records the synthesis tick
 /// the value was last decayed to, and `domain`/`rate_ppm` identify which
-/// domain's decay constant governs it.  For now every balance is tracked under
-/// the DEX domain.
+/// domain's decay constant governs it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Balance {
     pub units: u128,
@@ -68,22 +67,39 @@ impl Balance {
     }
 }
 
-/// The global state wave-field.
-/// - `accounts` hold stateful balances and per-account frequency vectors.
-/// - `pools` hold commutative aggregate balances.
-/// - `spectrum` is the NTT-domain representation of the latest commutative batch.
-pub struct WaveField {
-    pub accounts: DashMap<AccountId, AccountState>,
-    pub pools: DashMap<PoolId, Balance>,
-    pub ntt_engine: NttEngine,
-    /// Latest commutative wave-field amplitudes in the NTT domain.
-    pub spectrum: Vec<u64>,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct AccountState {
     pub balance: Balance,
     pub frequency_vector: FrequencyVector,
+}
+
+/// Partitioned state for one concurrency domain inside the global wave-field.
+/// Each domain owns its own account balances, pool balances, and NTT-domain
+/// spectrum snapshot, satisfying the whitepaper's domain-isolation requirement.
+#[derive(Debug)]
+pub struct DomainState {
+    pub accounts: DashMap<AccountId, AccountState>,
+    pub pools: DashMap<PoolId, Balance>,
+    /// Latest commutative wave-field amplitudes in the NTT domain for this domain.
+    pub spectrum: Vec<u64>,
+}
+
+impl DomainState {
+    pub fn new(ntt_size: usize) -> Self {
+        Self {
+            accounts: DashMap::new(),
+            pools: DashMap::new(),
+            spectrum: vec![0; ntt_size],
+        }
+    }
+}
+
+/// The global state wave-field.  State is partitioned by concurrency domain so
+/// that each domain has an isolated account/pool snapshot and its own NTT
+/// spectrum.  This mirrors the whitepaper's "Wave-Field domain partitioning".
+pub struct WaveField {
+    pub domains: DashMap<DomainId, DomainState>,
+    pub ntt_engine: NttEngine,
 }
 
 impl WaveField {
@@ -93,74 +109,101 @@ impl WaveField {
             "NTT size must be a power of two >= 2"
         );
         Self {
-            accounts: DashMap::new(),
-            pools: DashMap::new(),
+            domains: DashMap::new(),
             ntt_engine: NttEngine::new(ntt_size),
-            spectrum: vec![0; ntt_size],
         }
     }
 
-    pub fn ensure_account(&self, id: AccountId) {
-        self.accounts.entry(id).or_insert(AccountState::default());
+    pub(crate) fn ensure_domain(&self, domain: DomainId) {
+        let size = self.ntt_engine.size;
+        self.domains
+            .entry(domain)
+            .or_insert_with(|| DomainState::new(size));
+    }
+
+    // ------------------------------------------------------------------
+    // Domain-aware primitives.  These are the authoritative API for
+    // multi-domain wave-field state.
+    // ------------------------------------------------------------------
+
+    pub fn ensure_account_in_domain(&self, domain: DomainId, id: AccountId) {
+        self.ensure_domain(domain);
+        if let Some(state) = self.domains.get(&domain) {
+            state.accounts.entry(id).or_insert(AccountState::default());
+        }
     }
 
     /// Mark an account's balance as exempt from metabolic decay (e.g. a USDC or
-    /// bridged-asset token account).  Idempotent; creates the account if absent.
-    pub fn set_non_decaying(&self, id: AccountId) {
-        self.ensure_account(id);
-        if let Some(mut state) = self.accounts.get_mut(&id) {
-            state.balance.decays = false;
+    /// bridged-asset token account).  Idempotent; creates the account/domain if
+    /// absent.
+    pub fn set_non_decaying_in_domain(&self, domain: DomainId, id: AccountId) {
+        self.ensure_account_in_domain(domain, id);
+        if let Some(state) = self.domains.get(&domain) {
+            if let Some(mut account) = state.accounts.get_mut(&id) {
+                account.balance.decays = false;
+            }
         }
     }
 
     /// Record that an account transacted at synthesis `tick`, starting its
-    /// activity grace window.  Idempotent; creates the account if absent.
-    pub fn mark_active(&self, id: AccountId, tick: u64) {
-        self.ensure_account(id);
-        if let Some(mut state) = self.accounts.get_mut(&id) {
-            state.balance.last_active_tick = tick;
-        }
-    }
-
-    pub fn credit_account(&self, id: AccountId, amount: u128) {
-        self.ensure_account(id);
-        if let Some(mut state) = self.accounts.get_mut(&id) {
-            state.balance.saturating_add(amount);
-        }
-    }
-
-    pub fn debit_account(&self, id: AccountId, amount: u128) -> bool {
-        self.ensure_account(id);
-        if let Some(mut state) = self.accounts.get_mut(&id) {
-            if state.balance.units < amount {
-                return false;
+    /// activity grace window.  Idempotent; creates the account/domain if absent.
+    pub fn mark_active_in_domain(&self, domain: DomainId, id: AccountId, tick: u64) {
+        self.ensure_account_in_domain(domain, id);
+        if let Some(state) = self.domains.get(&domain) {
+            if let Some(mut account) = state.accounts.get_mut(&id) {
+                account.balance.last_active_tick = tick;
             }
-            state.balance.saturating_sub(amount);
-            true
-        } else {
-            false
         }
     }
 
-    pub fn account_balance(&self, id: AccountId) -> Balance {
-        self.accounts
-            .get(&id)
-            .map(|s| s.balance)
+    pub fn credit_account_in_domain(&self, domain: DomainId, id: AccountId, amount: u128) {
+        self.ensure_account_in_domain(domain, id);
+        if let Some(state) = self.domains.get(&domain) {
+            if let Some(mut account) = state.accounts.get_mut(&id) {
+                account.balance.saturating_add(amount);
+            }
+        }
+    }
+
+    pub fn debit_account_in_domain(
+        &self,
+        domain: DomainId,
+        id: AccountId,
+        amount: u128,
+    ) -> bool {
+        self.ensure_account_in_domain(domain, id);
+        if let Some(state) = self.domains.get(&domain) {
+            if let Some(mut account) = state.accounts.get_mut(&id) {
+                if account.balance.units < amount {
+                    return false;
+                }
+                account.balance.saturating_sub(amount);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn account_balance_in_domain(&self, domain: DomainId, id: AccountId) -> Balance {
+        self.domains
+            .get(&domain)
+            .and_then(|s| s.accounts.get(&id).map(|a| a.balance))
             .unwrap_or(Balance::zero())
     }
 
-    pub fn pool_balance(&self, pool_id: PoolId) -> Balance {
-        self.pools
-            .get(&pool_id)
-            .map(|b| *b)
+    pub fn pool_balance_in_domain(&self, domain: DomainId, pool_id: PoolId) -> Balance {
+        self.domains
+            .get(&domain)
+            .and_then(|s| s.pools.get(&pool_id).map(|b| *b))
             .unwrap_or(Balance::zero())
     }
 
-    /// Apply a batch of commutative deltas via NTT synthesis.
+    /// Apply a batch of commutative deltas via NTT synthesis for one domain.
     /// `deltas` is a map from NTT bin index to signed delta (in sub-units).
     /// The function verifies that NTT(aggregate) matches sequential summation.
-    pub fn synthesize_commutative_batch(
+    pub fn synthesize_commutative_batch_in_domain(
         &mut self,
+        domain: DomainId,
         deltas: &[(Coordinate, i128, PoolId)],
     ) -> Result<(), String> {
         let size = self.ntt_engine.size;
@@ -196,18 +239,21 @@ impl WaveField {
             }
         }
 
-        // Update spectrum and pool balances.
-        self.spectrum = ntt_input;
-        for (pool_id, aggregate) in pool_aggregates {
-            let mut balance = self.pools.entry(pool_id).or_insert(Balance::zero());
-            if aggregate >= 0 {
-                balance.saturating_add(aggregate as u128);
-            } else {
-                let abs = aggregate.unsigned_abs();
-                if balance.units < abs {
-                    return Err(format!("Pool {:?} would go negative by {}", pool_id, abs));
+        // Update spectrum and pool balances for the target domain.
+        self.ensure_domain(domain);
+        if let Some(mut state) = self.domains.get_mut(&domain) {
+            state.spectrum = ntt_input;
+            for (pool_id, aggregate) in pool_aggregates {
+                let mut balance = state.pools.entry(pool_id).or_insert(Balance::zero());
+                if aggregate >= 0 {
+                    balance.saturating_add(aggregate as u128);
+                } else {
+                    let abs = aggregate.unsigned_abs();
+                    if balance.units < abs {
+                        return Err(format!("Pool {:?} would go negative by {}", pool_id, abs));
+                    }
+                    balance.saturating_sub(abs);
                 }
-                balance.saturating_sub(abs);
             }
         }
 
@@ -215,53 +261,141 @@ impl WaveField {
     }
 
     /// Directly apply a small commutative delta without a full NTT batch.
-    pub fn apply_commutative_delta(&self, pool_id: PoolId, delta: i128) -> Result<(), String> {
-        let mut balance = self.pools.entry(pool_id).or_insert(Balance::zero());
-        if delta >= 0 {
-            balance.saturating_add(delta as u128);
-        } else {
-            let abs = delta.unsigned_abs();
-            if balance.units < abs {
-                return Err(format!("Pool {:?} would go negative by {}", pool_id, abs));
+    pub fn apply_commutative_delta_in_domain(
+        &self,
+        domain: DomainId,
+        pool_id: PoolId,
+        delta: i128,
+    ) -> Result<(), String> {
+        self.ensure_domain(domain);
+        if let Some(state) = self.domains.get_mut(&domain) {
+            let mut balance = state.pools.entry(pool_id).or_insert(Balance::zero());
+            if delta >= 0 {
+                balance.saturating_add(delta as u128);
+            } else {
+                let abs = delta.unsigned_abs();
+                if balance.units < abs {
+                    return Err(format!("Pool {:?} would go negative by {}", pool_id, abs));
+                }
+                balance.saturating_sub(abs);
             }
-            balance.saturating_sub(abs);
         }
         Ok(())
     }
 
-    /// Apply exponential metabolic decay to every account and pool balance,
-    /// advancing each to synthesis `tick`.
+    /// Apply exponential metabolic decay to every account and pool balance in
+    /// `domain`, advancing each to synthesis `tick` using that domain's own
+    /// decay constant.
     ///
-    /// Decay follows the closed-form curve `B(t) = B(0) * (1_000_000 - λ)^Δ /
-    /// 1_000_000^Δ`, where `Δ = tick - last_decay_tick` for each balance.  Staked
-    /// operators listed in `immune_accounts` are exempt: their balances are not
-    /// decayed, but their decay clock is still advanced so a later loss of
-    /// immunity does not trigger a large catch-up burn.
+    /// Decay follows the closed-form curve `B(t) = B(0) * e^(-λt / 1_000_000)`
+    /// where `Δ = tick - last_decay_tick` for each balance.  Immune accounts
+    /// are exempt: their balances are not decayed, but their decay clock is
+    /// still advanced so a later loss of immunity does not trigger a large
+    /// catch-up burn.
     ///
-    /// Returns the total value burned across all balances this call.
+    /// Returns the total value burned in `domain` this call.
+    pub fn apply_metabolic_decay_in_domain(
+        &mut self,
+        domain: DomainId,
+        tick: u64,
+        rate_ppm: u64,
+        immune_accounts: &HashSet<AccountId>,
+    ) -> u128 {
+        self.ensure_domain(domain);
+        let Some(state) = self.domains.get(&domain) else {
+            return 0;
+        };
+
+        let mut total_burned = 0u128;
+        for mut entry in state.accounts.iter_mut() {
+            if immune_accounts.contains(entry.key()) {
+                entry.value_mut().balance.last_decay_tick = tick;
+                continue;
+            }
+            let burned = decay_balance_in_place(
+                &mut entry.value_mut().balance,
+                tick,
+                rate_ppm,
+            );
+            total_burned = total_burned.saturating_add(burned);
+        }
+
+        for mut entry in state.pools.iter_mut() {
+            let burned = decay_balance_in_place(entry.value_mut(), tick, rate_ppm);
+            total_burned = total_burned.saturating_add(burned);
+        }
+
+        total_burned
+    }
+
+    /// Apply metabolic decay to every registered domain, using each domain's
+    /// own lambda.  Returns the aggregate burn across all domains.
+    pub fn apply_metabolic_decay_all(
+        &mut self,
+        tick: u64,
+        domain_lambdas: &std::collections::HashMap<DomainId, u64>,
+        immune_accounts: &HashSet<AccountId>,
+    ) -> u128 {
+        let mut total = 0u128;
+        for (domain, lambda) in domain_lambdas {
+            total = total
+                .saturating_add(self.apply_metabolic_decay_in_domain(*domain, tick, *lambda, immune_accounts));
+        }
+        total
+    }
+
+    // ------------------------------------------------------------------
+    // Convenience wrappers for the built-in DEX domain.  These preserve the
+    // original single-domain API while the internal wave-field is now
+    // partitioned by domain.
+    // ------------------------------------------------------------------
+
+    pub fn ensure_account(&self, id: AccountId) {
+        self.ensure_account_in_domain(DEFAULT_DEX_DOMAIN, id);
+    }
+
+    pub fn set_non_decaying(&self, id: AccountId) {
+        self.set_non_decaying_in_domain(DEFAULT_DEX_DOMAIN, id);
+    }
+
+    pub fn mark_active(&self, id: AccountId, tick: u64) {
+        self.mark_active_in_domain(DEFAULT_DEX_DOMAIN, id, tick);
+    }
+
+    pub fn credit_account(&self, id: AccountId, amount: u128) {
+        self.credit_account_in_domain(DEFAULT_DEX_DOMAIN, id, amount);
+    }
+
+    pub fn debit_account(&self, id: AccountId, amount: u128) -> bool {
+        self.debit_account_in_domain(DEFAULT_DEX_DOMAIN, id, amount)
+    }
+
+    pub fn account_balance(&self, id: AccountId) -> Balance {
+        self.account_balance_in_domain(DEFAULT_DEX_DOMAIN, id)
+    }
+
+    pub fn pool_balance(&self, pool_id: PoolId) -> Balance {
+        self.pool_balance_in_domain(DEFAULT_DEX_DOMAIN, pool_id)
+    }
+
+    pub fn synthesize_commutative_batch(
+        &mut self,
+        deltas: &[(Coordinate, i128, PoolId)],
+    ) -> Result<(), String> {
+        self.synthesize_commutative_batch_in_domain(DEFAULT_DEX_DOMAIN, deltas)
+    }
+
+    pub fn apply_commutative_delta(&self, pool_id: PoolId, delta: i128) -> Result<(), String> {
+        self.apply_commutative_delta_in_domain(DEFAULT_DEX_DOMAIN, pool_id, delta)
+    }
+
     pub fn apply_metabolic_decay(
         &mut self,
         tick: u64,
         rate_ppm: u64,
         immune_accounts: &HashSet<AccountId>,
     ) -> u128 {
-        let mut total_burned = 0u128;
-
-        for mut entry in self.accounts.iter_mut() {
-            if immune_accounts.contains(entry.key()) {
-                entry.value_mut().balance.last_decay_tick = tick;
-                continue;
-            }
-            let burned = decay_balance_in_place(&mut entry.value_mut().balance, tick, rate_ppm);
-            total_burned = total_burned.saturating_add(burned);
-        }
-
-        for mut entry in self.pools.iter_mut() {
-            let burned = decay_balance_in_place(entry.value_mut(), tick, rate_ppm);
-            total_burned = total_burned.saturating_add(burned);
-        }
-
-        total_burned
+        self.apply_metabolic_decay_in_domain(DEFAULT_DEX_DOMAIN, tick, rate_ppm, immune_accounts)
     }
 }
 
@@ -439,10 +573,34 @@ mod tests {
 
         // Beyond the grace window the balance decays from where the clock left
         // off (tick 7 -> tick 4*60*60 + 7 + 1, i.e. 4h + 1 ticks later).
-        let burned2 = field.apply_metabolic_decay(5 + METABOLIC_IDLE_GRACE_TICKS + 1, 10_000, &immune);
-        let expected = decayed_balance(initial, 10_000, (5 + METABOLIC_IDLE_GRACE_TICKS + 1) - 7);
+        let burned2 = field.apply_metabolic_decay(
+            5 + METABOLIC_IDLE_GRACE_TICKS + 1,
+            10_000,
+            &immune,
+        );
+        let expected = decayed_balance(
+            initial,
+            10_000,
+            (5 + METABOLIC_IDLE_GRACE_TICKS + 1) - 7,
+        );
         assert_eq!(field.account_balance(id).units, expected);
         assert!(expected < initial);
         assert_eq!(burned2, initial - expected);
+    }
+
+    #[test]
+    fn domains_keep_balances_isolated() {
+        let field = WaveField::new(16);
+        let id = AccountId([13u8; 32]);
+        let other_domain = [99u8; 32];
+        field.credit_account_in_domain(DEFAULT_DEX_DOMAIN, id, 1_000_000);
+        field.credit_account_in_domain(other_domain, id, 2_000_000);
+
+        assert_eq!(field.account_balance_in_domain(DEFAULT_DEX_DOMAIN, id).units, 1_000_000);
+        assert_eq!(field.account_balance_in_domain(other_domain, id).units, 2_000_000);
+
+        assert!(field.debit_account_in_domain(DEFAULT_DEX_DOMAIN, id, 500_000));
+        assert_eq!(field.account_balance_in_domain(DEFAULT_DEX_DOMAIN, id).units, 500_000);
+        assert_eq!(field.account_balance_in_domain(other_domain, id).units, 2_000_000);
     }
 }

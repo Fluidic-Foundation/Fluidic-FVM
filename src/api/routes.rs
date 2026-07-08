@@ -1,6 +1,6 @@
 use crate::api::state::{ApiState, RecentShift, build_pool_payout_shift};
-use crate::consensus::domain::{DomainPolicy, FeePolicy, OrderingMode};
-use crate::consensus::dag::{DagError, ShiftStatus, VectorClockDag};
+use crate::consensus::domain::{DomainPolicy, FeePolicy, StatefulOrdering};
+use crate::consensus::dag::{DagError, RejectionReason, ShiftStatus, VectorClockDag};
 use crate::crypto::{AccountId, CommutativeShift, KeyPair, Signal, StakeShift, StatefulShift};
 use crate::evm::{block_hash_for, evm_address_to_fluidic};
 use axum::{
@@ -26,6 +26,7 @@ pub fn api_router() -> Router<Arc<ApiState>> {
         .route("/api/shift/stateful", post(submit_stateful))
         .route("/api/shifts/recent", get(get_recent_shifts))
         .route("/api/shift/:hash/status", get(shift_status))
+        .route("/api/shift/:hash/proof", get(get_rejection_proof))
         .route("/api/certificate/:tick", get(get_certificate))
         .route("/api/quorum/:tick", get(get_quorum_status))
         .route("/api/ticks/recent", get(get_recent_ticks))
@@ -817,16 +818,15 @@ fn domain_policy_json(
     policy: &crate::consensus::domain::DomainPolicy,
     shift_count: usize,
 ) -> serde_json::Value {
-    use crate::consensus::domain::OrderingMode;
+    use crate::consensus::domain::StatefulOrdering;
     serde_json::json!({
         "id": hex::encode(policy.domain),
         "name": domain_display_name(&policy.domain),
         "commutative": policy.commutative,
         "stateful": policy.stateful,
         "ordering": match policy.ordering {
-            OrderingMode::Causal => "causal",
-            OrderingMode::Commutative => "commutative",
-            OrderingMode::Strict => "strict",
+            StatefulOrdering::Causal => "causal",
+            StatefulOrdering::Strict => "strict",
         },
         "finalization_depth": policy.finalization_depth,
         "metabolic_lambda_ppm": policy.metabolic_lambda_ppm,
@@ -923,9 +923,8 @@ async fn register_domain(
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid signature hex".to_string()))?;
 
     let ordering = match req.ordering.as_str() {
-        "causal" => OrderingMode::Causal,
-        "commutative" => OrderingMode::Commutative,
-        "strict" => OrderingMode::Strict,
+        "causal" => StatefulOrdering::Causal,
+        "strict" => StatefulOrdering::Strict,
         other => {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -1007,9 +1006,8 @@ fn domain_registration_signing_bytes(policy: &DomainPolicy, fee: u128) -> Vec<u8
     buf.push(policy.commutative as u8);
     buf.push(policy.stateful as u8);
     buf.push(match policy.ordering {
-        OrderingMode::Causal => 0,
-        OrderingMode::Commutative => 1,
-        OrderingMode::Strict => 2,
+        StatefulOrdering::Causal => 0,
+        StatefulOrdering::Strict => 1,
     });
     buf.extend_from_slice(&policy.finalization_depth.to_le_bytes());
     buf.extend_from_slice(&policy.metabolic_lambda_ppm.to_le_bytes());
@@ -1087,6 +1085,60 @@ fn dag_error_name(err: &DagError) -> &'static str {
         DagError::InsufficientBalance(_) => "insufficient_balance",
         DagError::DoubleSpend(_) => "double_spend",
         DagError::CausalCycle(_) => "causal_cycle",
+    }
+}
+
+fn rejection_reason_name(reason: &RejectionReason) -> String {
+    match reason {
+        RejectionReason::InvalidSignature => "invalid_signature".to_string(),
+        RejectionReason::MissingPredecessor(h) => format!("missing_predecessor:{}", hex::encode(h)),
+        RejectionReason::InsufficientBalance => "insufficient_balance".to_string(),
+        RejectionReason::DoubleSpend => "double_spend".to_string(),
+        RejectionReason::CausalCycle => "causal_cycle".to_string(),
+    }
+}
+
+async fn get_rejection_proof(
+    State(state): State<Arc<ApiState>>,
+    Path(hash_hex): Path<String>,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    wait_for_min_tick(&state, query.min_tick).await;
+    let bytes = hex::decode(&hash_hex).map_err(|_| (StatusCode::BAD_REQUEST, "invalid hash hex".to_string()))?;
+    if bytes.len() != 32 {
+        return Err((StatusCode::BAD_REQUEST, "hash must be 32 bytes".to_string()));
+    }
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&bytes);
+
+    let proof = state
+        .oscillator
+        .dag
+        .lock()
+        .unwrap()
+        .rejection_proofs
+        .get(&hash)
+        .cloned();
+
+    match proof {
+        Some(p) => Ok(Json(serde_json::json!({
+            "hash": hash_hex,
+            "found": true,
+            "reason": rejection_reason_name(&p.reason),
+            "rejected_at_tick": p.rejected_at_tick,
+            "operator_id": p.operator_id.to_string(),
+            "signature": hex::encode(&p.signature),
+            "signing_bytes": hex::encode(p.signing_bytes()),
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "hash": hash_hex,
+            "found": false,
+            "reason": null,
+            "rejected_at_tick": null,
+            "operator_id": null,
+            "signature": null,
+            "signing_bytes": null,
+        }))),
     }
 }
 
@@ -1186,31 +1238,41 @@ async fn get_sync_state(State(state): State<Arc<ApiState>>) -> impl IntoResponse
     let balances: std::collections::HashMap<String, serde_json::Value> = {
         let field = state.oscillator.wave_field.lock().unwrap();
         field
-            .accounts
-            .iter()
-            .map(|entry| {
-                let acc = *entry.key();
-                let bal = &entry.value().balance;
-                (
-                    hex::encode(acc.0),
-                    serde_json::json!({
-                        "units": bal.units.to_string(),
-                        "last_decay_tick": bal.last_decay_tick,
-                        "decays": bal.decays,
-                        "last_active_tick": bal.last_active_tick,
-                    }),
-                )
+            .domains
+            .get(&crate::crypto::DEFAULT_DEX_DOMAIN)
+            .map(|dex| {
+                dex.accounts
+                    .iter()
+                    .map(|entry| {
+                        let acc = *entry.key();
+                        let bal = &entry.value().balance;
+                        (
+                            hex::encode(acc.0),
+                            serde_json::json!({
+                                "units": bal.units.to_string(),
+                                "last_decay_tick": bal.last_decay_tick,
+                                "decays": bal.decays,
+                                "last_active_tick": bal.last_active_tick,
+                            }),
+                        )
+                    })
+                    .collect()
             })
-            .collect()
+            .unwrap_or_default()
     };
 
     let pools: std::collections::HashMap<String, String> = {
         let field = state.oscillator.wave_field.lock().unwrap();
         field
-            .pools
-            .iter()
-            .map(|entry| (hex::encode(entry.key()), entry.value().units.to_string()))
-            .collect()
+            .domains
+            .get(&crate::crypto::DEFAULT_DEX_DOMAIN)
+            .map(|dex| {
+                dex.pools
+                    .iter()
+                    .map(|entry| (hex::encode(entry.key()), entry.value().units.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
     };
 
     let registry: std::collections::HashMap<String, String> = {

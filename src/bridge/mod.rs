@@ -7,7 +7,7 @@
 //! multisig verification, finality thresholds) is intentionally left to
 //! downstream integrations so the core runtime stays chain-agnostic.
 
-use crate::consensus::domain::{DomainPolicy, OrderingMode};
+use crate::consensus::domain::{DomainPolicy, StatefulOrdering};
 use crate::crypto::{AccountId, DomainId, Signal, StatefulShift, VectorClock};
 use crate::field::wave_field::Balance;
 
@@ -74,7 +74,7 @@ pub fn bridge_domain_policy(domain: DomainId) -> DomainPolicy {
         domain,
         false,
         true,
-        OrderingMode::Strict,
+        StatefulOrdering::Strict,
         10,
         0, // bridge token accounts should not decay
         crate::consensus::domain::FeePolicy::Flat(
@@ -186,7 +186,7 @@ mod tests {
         let domain = [99u8; 32];
         let policy = bridge_domain_policy(domain);
         assert_eq!(policy.domain, domain);
-        assert!(matches!(policy.ordering, OrderingMode::Strict));
+        assert!(matches!(policy.ordering, StatefulOrdering::Strict));
         assert!(!policy.commutative);
         assert!(policy.stateful);
     }

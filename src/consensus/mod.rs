@@ -9,8 +9,8 @@ pub use certificate::{
     CertificateTracker, SlashingReason, SynthesisCertificate, balances_root, commutative_root,
     stateful_root,
 };
-pub use dag::{DagError, DagNode, ShiftStatus, VectorClockDag};
-pub use domain::{DomainPolicy, DomainRegistry, FeePolicy, OrderingMode};
+pub use dag::{DagError, DagNode, RejectionProof, RejectionReason, ShiftStatus, VectorClockDag};
+pub use domain::{DomainPolicy, DomainRegistry, FeePolicy, StatefulOrdering};
 pub use ntt::{NTT_MODULUS, NTT_PRIMITIVE_ROOT, NttEngine};
 pub use oscillator::{Oscillator, SynthesisResult};
 pub use simulation::TuningForkMeshSimulation;

@@ -6,7 +6,7 @@
 
 use crate::consensus::certificate::SynthesisCertificate;
 use crate::consensus::Oscillator;
-use crate::crypto::AccountId;
+use crate::crypto::{AccountId, DEFAULT_DEX_DOMAIN};
 use crate::field::wave_field::{AccountState, Balance};
 use crate::operator::stake::OperatorEntry;
 use serde::Deserialize;
@@ -96,32 +96,34 @@ pub fn apply_sync_state(
     // Apply balances.
     {
         let field = osc.wave_field.lock().map_err(|e| e.to_string())?;
-        field.accounts.clear();
-        for (hex, bal) in state.balances {
-            let account = parse_account(&hex)?;
-            let units = parse_u128(&bal.units)?;
-            let mut balance = Balance::zero();
-            balance.units = units;
-            balance.last_decay_tick = bal.last_decay_tick;
-            balance.decays = bal.decays;
-            balance.last_active_tick = bal.last_active_tick;
-            field.accounts.insert(
-                account,
-                AccountState {
-                    balance,
-                    frequency_vector: Default::default(),
-                },
-            );
-        }
+        if let Some(dex) = field.domains.get(&DEFAULT_DEX_DOMAIN) {
+            dex.accounts.clear();
+            for (hex, bal) in state.balances {
+                let account = parse_account(&hex)?;
+                let units = parse_u128(&bal.units)?;
+                let mut balance = Balance::zero();
+                balance.units = units;
+                balance.last_decay_tick = bal.last_decay_tick;
+                balance.decays = bal.decays;
+                balance.last_active_tick = bal.last_active_tick;
+                dex.accounts.insert(
+                    account,
+                    AccountState {
+                        balance,
+                        frequency_vector: Default::default(),
+                    },
+                );
+            }
 
-        // Apply pool balances.
-        field.pools.clear();
-        for (hex, units_str) in state.pools {
-            let pool_id = parse_pool(&hex)?;
-            let units = parse_u128(&units_str)?;
-            let mut balance = Balance::zero();
-            balance.units = units;
-            field.pools.insert(pool_id, balance);
+            // Apply pool balances.
+            dex.pools.clear();
+            for (hex, units_str) in state.pools {
+                let pool_id = parse_pool(&hex)?;
+                let units = parse_u128(&units_str)?;
+                let mut balance = Balance::zero();
+                balance.units = units;
+                dex.pools.insert(pool_id, balance);
+            }
         }
     }
 

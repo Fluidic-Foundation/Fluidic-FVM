@@ -1,6 +1,92 @@
 use crate::crypto::{StatefulShift, TxHash, VectorClock};
 use std::collections::{HashMap, HashSet};
 
+/// Verifiable reason a stateful shift was rejected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RejectionReason {
+    /// The shift's signature could not be verified against the sender.
+    InvalidSignature,
+    /// A declared predecessor hash is not known to this DAG.
+    MissingPredecessor(TxHash),
+    /// The sender's balance would be overdrawn.
+    InsufficientBalance,
+    /// The shift conflicts with another concurrent spend and the combined amount
+    /// exceeds the sender's balance.
+    DoubleSpend,
+    /// The shift's predecessor graph contains a cycle.
+    CausalCycle,
+}
+
+impl RejectionReason {
+    /// Stable byte encoding used for signing and serialization.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::InvalidSignature => vec![0],
+            Self::MissingPredecessor(h) => {
+                let mut v = vec![1];
+                v.extend_from_slice(h);
+                v
+            }
+            Self::InsufficientBalance => vec![2],
+            Self::DoubleSpend => vec![3],
+            Self::CausalCycle => vec![4],
+        }
+    }
+}
+
+impl From<&DagError> for RejectionReason {
+    fn from(err: &DagError) -> Self {
+        match err {
+            DagError::InvalidSignature(_) => Self::InvalidSignature,
+            DagError::MissingPredecessor(h) => Self::MissingPredecessor(*h),
+            DagError::InsufficientBalance(_) => Self::InsufficientBalance,
+            DagError::DoubleSpend(_) => Self::DoubleSpend,
+            DagError::CausalCycle(_) => Self::CausalCycle,
+        }
+    }
+}
+
+/// A signed, verifiable attestation that a stateful shift was rejected.
+/// Produced by an operator so light clients and peers can verify the reason
+/// without re-executing the full DAG.
+#[derive(Clone, Debug)]
+pub struct RejectionProof {
+    pub shift_hash: TxHash,
+    pub reason: RejectionReason,
+    /// Synthesis tick at which the rejection was recorded.
+    pub rejected_at_tick: u64,
+    /// Operator account that attests to the rejection.
+    pub operator_id: crate::crypto::AccountId,
+    /// Ed25519 signature over the canonical signing bytes.
+    pub signature: Vec<u8>,
+}
+
+impl RejectionProof {
+    /// Canonical bytes signed by the attesting operator.
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(128);
+        buf.extend_from_slice(b"FLUIDIC:REJECT:v1");
+        buf.extend_from_slice(&self.shift_hash);
+        buf.extend_from_slice(&self.reason.to_bytes());
+        buf.extend_from_slice(&self.rejected_at_tick.to_le_bytes());
+        buf.extend_from_slice(&self.operator_id.0);
+        buf
+    }
+
+    /// Verify the proof signature against an operator public key.
+    pub fn verify(&self, public_key: &ed25519_dalek::VerifyingKey) -> bool {
+        if self.signature.len() != 64 {
+            return false;
+        }
+        let sig_bytes: [u8; 64] = match self.signature.as_slice().try_into() {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        crate::crypto::KeyPair::verify(public_key, &self.signing_bytes(), &signature)
+    }
+}
+
 /// Lifecycle status of a stateful shift in the DAG.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShiftStatus {
@@ -41,6 +127,19 @@ pub enum DagError {
     CausalCycle(TxHash),
 }
 
+impl DagError {
+    /// The shift hash this error refers to.
+    pub fn shift_hash(&self) -> TxHash {
+        match self {
+            Self::MissingPredecessor(h)
+            | Self::InvalidSignature(h)
+            | Self::InsufficientBalance(h)
+            | Self::DoubleSpend(h)
+            | Self::CausalCycle(h) => *h,
+        }
+    }
+}
+
 /// Vector-clock DAG that orders state-dependent phase-shifts before they are
 /// applied to the wave-field. It also enforces account balance conservation.
 pub struct VectorClockDag {
@@ -50,6 +149,8 @@ pub struct VectorClockDag {
     pub balances: HashMap<crate::crypto::AccountId, u128>,
     /// Shifts that failed DAG insertion, keyed by their hash.
     pub rejected: HashMap<TxHash, DagError>,
+    /// Signed operator attestations for rejected shifts.
+    pub rejection_proofs: HashMap<TxHash, RejectionProof>,
     /// Maximum vector-clock value observed across all inserted shifts per node id.
     pub max_clock: VectorClock,
     /// Latest vector-clock observed for each sender account.
@@ -64,6 +165,7 @@ impl VectorClockDag {
             tips: HashMap::new(),
             balances: HashMap::new(),
             rejected: HashMap::new(),
+            rejection_proofs: HashMap::new(),
             max_clock: VectorClock::new(),
             account_tips: HashMap::new(),
         }

@@ -14,7 +14,7 @@ pub const DECAY_DENOMINATOR: u64 = 1_000_000;
 
 /// Default exponential decay constant λ for the built-in DEX domain, expressed
 /// in parts-per-million per synthesis tick.  A value of `20` means each tick a
-/// balance retains `(1_000_000 - 20) / 1_000_000 = 99.998%` of its value, i.e.
+/// balance retains `e^(-20 / 1_000_000) ≈ 99.998%` of its value, i.e. about
 /// 0.002% decays away per tick.
 pub const DEFAULT_DEX_LAMBDA_PPM: u64 = 20;
 
@@ -29,46 +29,90 @@ pub const METABOLIC_IDLE_GRACE_TICKS: u64 = 4 * 60 * 60;
 /// remaining 75% is redistributed to operators and liquidity providers.
 pub const METABOLIC_BURN_BP: u64 = 2_500;
 
-/// Integer exponentiation by squaring for `u128`.
-///
-/// Uses `saturating_mul` so the result is always defined and identical across
-/// all honest nodes even on overflow (consensus-critical determinism).  Callers
-/// must keep `base^exp` within `u128` range to obtain mathematically exact
-/// decay; see [`decayed_balance`].
-pub fn pow(mut base: u128, mut exp: u64) -> u128 {
-    let mut acc: u128 = 1;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            acc = acc.saturating_mul(base);
-        }
-        exp >>= 1;
-        if exp > 0 {
-            base = base.saturating_mul(base);
-        }
+/// Fixed-point precision for continuous decay exponent calculations.
+/// 2^60 gives ~17 decimal digits of precision, more than enough for
+/// consensus-critical balance calculations.
+pub const EXP_PRECISION: u128 = 1u128 << 60;
+
+/// Threshold beyond which e^(-x) rounds to zero in fixed-point arithmetic.
+/// e^(-100) < 1e-43, far below 1 / u128::MAX, so no non-zero u128 balance can
+/// produce a remaining value above zero.
+const EXP_OVERFLOW_THRESHOLD: u128 = 100;
+
+/// Compute floor(e^(-x_num / x_denom) * EXP_PRECISION) using scaling-and-squaring
+/// with a Taylor series for the reduced exponent.  Deterministic for all inputs.
+fn exp_neg_fixed(x_num: u128, x_denom: u128) -> u128 {
+    if x_num == 0 || x_denom == 0 {
+        return EXP_PRECISION;
     }
-    acc
+    // For very large exponents the result is below one part in u128::MAX.
+    if x_num / x_denom >= EXP_OVERFLOW_THRESHOLD {
+        return 0;
+    }
+
+    // Scale x down by doubling the denominator until x < 1.  Each halving of
+    // the exponent will be undone by squaring the result once.
+    let mut reduced_denom = x_denom;
+    let mut squares = 0u32;
+    while x_num >= reduced_denom {
+        reduced_denom = reduced_denom.saturating_mul(2);
+        squares += 1;
+    }
+
+    let y = x_num.saturating_mul(EXP_PRECISION) / reduced_denom;
+    let mut result = exp_neg_taylor(y);
+    for _ in 0..squares {
+        result = result.saturating_mul(result) / EXP_PRECISION;
+    }
+    result
 }
 
-/// Closed-form exponential decay of a balance over `elapsed` synthesis ticks:
+/// Taylor series for e^(-y) where y is a fixed-point number in [0, EXP_PRECISION).
+/// Returns floor(e^(-y) * EXP_PRECISION).
+fn exp_neg_taylor(y: u128) -> u128 {
+    // e^(-y) = 1 - y + y^2/2! - y^3/3! + ...
+    // Accumulate positive and negative terms separately to limit cancellation.
+    let mut positive = EXP_PRECISION; // k = 0 term
+    let mut negative = 0u128;
+    let mut term = y; // magnitude of the k = 1 term, scaled by EXP_PRECISION
+    let mut is_negative = true; // k = 1 is subtracted
+
+    for k in 2u32..=40 {
+        if is_negative {
+            negative = negative.saturating_add(term);
+        } else {
+            positive = positive.saturating_add(term);
+        }
+        // term_{k} = term_{k-1} * y / (k * EXP_PRECISION)
+        let divisor = (k as u128).saturating_mul(EXP_PRECISION);
+        term = term.saturating_mul(y) / divisor;
+        is_negative = !is_negative;
+    }
+
+    positive.saturating_sub(negative)
+}
+
+/// Closed-form continuous exponential decay of a balance over `elapsed`
+/// synthesis ticks:
 ///
 /// ```text
-/// B(elapsed) = B(0) * (1_000_000 - λ)^elapsed / 1_000_000^elapsed
+/// B(elapsed) = B(0) * e^(-λ * elapsed / 1_000_000)
 /// ```
 ///
-/// This is the discrete integer analogue of `B(t) = B(0) * e^(-λt)`.  All
-/// arithmetic is integer-only and deterministic, so every honest node computes
-/// the exact same remaining balance for a given `(balance, λ, elapsed)`.
+/// where λ is the per-tick decay constant expressed in parts-per-million.
+/// All arithmetic is deterministic fixed-point integer math so every honest
+/// node computes the exact same remaining balance for a given
+/// `(balance, λ, elapsed)`.
 pub fn decayed_balance(balance: u128, rate_ppm: u64, elapsed: u64) -> u128 {
     if balance == 0 || elapsed == 0 {
         return balance;
     }
-    // Cap λ strictly below the denominator so a balance never fully vanishes in
-    // a single tick and the retained fraction is always >= 1 / 1_000_000.
-    let rate_ppm = rate_ppm.min(DECAY_DENOMINATOR - 1);
-    let retain = (DECAY_DENOMINATOR - rate_ppm) as u128;
-    let numerator = pow(retain, elapsed);
-    let denominator = pow(DECAY_DENOMINATOR as u128, elapsed);
-    balance.saturating_mul(numerator) / denominator
+    // Cap λ strictly below the denominator so the formula is well-defined.
+    let rate_ppm = (rate_ppm as u128).min(DECAY_DENOMINATOR as u128 - 1);
+    let x_num = rate_ppm.saturating_mul(elapsed as u128);
+    let x_denom = DECAY_DENOMINATOR as u128;
+    let factor = exp_neg_fixed(x_num, x_denom);
+    balance.saturating_mul(factor) / EXP_PRECISION
 }
 
 /// A continuous value stream whose balance decays exponentially over synthesis
@@ -191,24 +235,27 @@ mod tests {
     use crate::crypto::keys::KeyPair;
 
     #[test]
-    fn pow_uses_exponentiation_by_squaring() {
-        assert_eq!(pow(1, 0), 1);
-        assert_eq!(pow(7, 1), 7);
-        assert_eq!(pow(2, 10), 1024);
-        assert_eq!(pow(9_999, 2), 99_980_001);
-        assert_eq!(pow(10_000, 3), 1_000_000_000_000);
+    fn exp_neg_fixed_is_deterministic() {
+        // e^0 = 1
+        assert_eq!(exp_neg_fixed(0, 1_000_000), EXP_PRECISION);
+        // e^(-1) ≈ 0.36787944117
+        let one = exp_neg_fixed(1_000_000, 1_000_000);
+        assert!(one > 0 && one < EXP_PRECISION);
+        // Larger exponent gives smaller result.
+        let two = exp_neg_fixed(2_000_000, 1_000_000);
+        assert!(two < one);
+        // Very large exponent rounds to zero.
+        assert_eq!(exp_neg_fixed(200_000_000, 1_000_000), 0);
     }
 
     #[test]
-    fn decayed_balance_matches_closed_form() {
-        // λ = 10_000 ppm (1% per tick), retain 990_000/1_000_000.
+    fn decayed_balance_matches_continuous_exponential() {
+        // λ = 10_000 ppm (0.01 per tick).
         let initial = 1_000_000u128;
         assert_eq!(decayed_balance(initial, 10_000, 0), initial);
-        assert_eq!(decayed_balance(initial, 10_000, 1), 990_000);
-        // 1_000_000 * 990_000^2 / 1_000_000^2
-        assert_eq!(decayed_balance(initial, 10_000, 2), 980_100);
-        // 1_000_000 * 990_000^3 / 1_000_000^3
-        assert_eq!(decayed_balance(initial, 10_000, 3), 970_299);
+        assert_eq!(decayed_balance(initial, 10_000, 1), 990_049);
+        assert_eq!(decayed_balance(initial, 10_000, 2), 980_198);
+        assert_eq!(decayed_balance(initial, 10_000, 3), 970_445);
     }
 
     #[test]
@@ -235,12 +282,12 @@ mod tests {
 
     #[test]
     fn lambda_is_capped_below_denominator() {
-        // λ >= 1_000_000 is clamped to 999_999 so at least 1/1_000_000 always survives.
+        // λ >= 1_000_000 is clamped to 999_999 so the exponent stays finite.
         let owner = KeyPair::generate().account_id();
         let stream = MetabolicStream::new([9u8; 32], owner, 1_000_000, 2_000_000);
         assert_eq!(stream.rate_ppm, DECAY_DENOMINATOR - 1);
-        // One tick at the capped rate retains 1/1_000_000 of the balance.
-        assert_eq!(stream.remaining_at(1), 1);
+        // One tick at the capped rate: e^(-0.999999) ≈ 0.367879774.
+        assert_eq!(stream.remaining_at(1), 367_879);
     }
 
     #[test]
@@ -248,8 +295,8 @@ mod tests {
         let owner = KeyPair::generate().account_id();
         let stream = MetabolicStream::new([1u8; 32], owner, 1_000_000, 10_000);
         assert_eq!(stream.remaining_at(0), 1_000_000);
-        assert_eq!(stream.remaining_at(1), 990_000);
-        assert_eq!(stream.remaining_at(2), 980_100);
+        assert_eq!(stream.remaining_at(1), 990_049);
+        assert_eq!(stream.remaining_at(2), 980_198);
         assert_eq!(stream.remaining_at(5), decayed_balance(1_000_000, 10_000, 5));
     }
 
@@ -259,14 +306,14 @@ mod tests {
         let mut stream = MetabolicStream::new([2u8; 32], owner, 1_000_000, 10_000);
 
         let (burned, exhausted) = stream.process(1);
-        assert_eq!(burned, 10_000); // 1_000_000 - 990_000
+        assert_eq!(burned, 9_951); // 1_000_000 - 990_049
         assert!(!exhausted);
-        assert_eq!(stream.remaining, 990_000);
+        assert_eq!(stream.remaining, 990_049);
 
         let (burned, exhausted) = stream.process(2);
-        assert_eq!(burned, 9_900); // 990_000 - 980_100
+        assert_eq!(burned, 9_851); // 990_049 - 980_198
         assert!(!exhausted);
-        assert_eq!(stream.remaining, 980_100);
+        assert_eq!(stream.remaining, 980_198);
 
         // Re-processing the same tick burns nothing (idempotent).
         let (burned, _) = stream.process(2);
@@ -280,12 +327,12 @@ mod tests {
         engine.add_stream(MetabolicStream::new([3u8; 32], owner, 1_000_000, 10_000));
 
         let burned = engine.process_metabolic_degradation(1);
-        assert_eq!(burned, 10_000);
-        assert_eq!(engine.total_burned(), 10_000);
+        assert_eq!(burned, 9_951);
+        assert_eq!(engine.total_burned(), 9_951);
 
         let burned = engine.process_metabolic_degradation(2);
-        assert_eq!(burned, 9_900);
-        assert_eq!(engine.total_burned(), 19_900);
+        assert_eq!(burned, 9_851);
+        assert_eq!(engine.total_burned(), 19_802);
         assert_eq!(engine.active_stream_count(), 1);
     }
 
@@ -293,8 +340,8 @@ mod tests {
     fn engine_removes_fully_exhausted_streams() {
         let engine = MetabolicDecayEngine::new();
         let owner = KeyPair::generate().account_id();
-        // A tiny balance with the maximal capped rate decays to zero quickly.
-        engine.add_stream(MetabolicStream::new([4u8; 32], owner, 1, 9_999));
+        // A tiny balance with a high rate decays to zero quickly.
+        engine.add_stream(MetabolicStream::new([4u8; 32], owner, 1, 999_999));
         let burned = engine.process_metabolic_degradation(1);
         assert_eq!(burned, 1);
         assert_eq!(engine.active_stream_count(), 0);

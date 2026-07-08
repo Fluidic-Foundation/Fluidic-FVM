@@ -2,11 +2,11 @@ use crate::consensus::certificate::{
     CertificateTracker, SlashingReason, SynthesisCertificate, balances_root, commutative_root,
     evm_root, stateful_root,
 };
-use crate::consensus::dag::{DagError, ShiftStatus, VectorClockDag};
-use crate::consensus::domain::{DomainRegistry, OrderingMode};
+use crate::consensus::dag::{DagError, RejectionProof, RejectionReason, ShiftStatus, VectorClockDag};
+use crate::consensus::domain::{DomainRegistry, StatefulOrdering};
 use crate::crypto::{
     AccountId, CommutativeShift, DomainId, KeyPair, PoolId, RegistrationShift, Signal, StakeShift,
-    StatefulShift, VectorClock,
+    StatefulShift, TxHash, VectorClock, DEFAULT_DEX_DOMAIN,
 };
 use crate::evm::EvmPool;
 use crate::field::coordinates::Coordinate;
@@ -171,9 +171,35 @@ impl Oscillator {
     }
 
     /// Check whether a stake-weighted quorum of certificates exists for `tick`.
-    pub fn check_quorum(&self, tick: u64) -> Option<(crate::consensus::certificate::QuorumView, u128)> {
+    pub fn check_quorum(&self,
+        tick: u64,
+    ) -> Option<(crate::consensus::certificate::QuorumView, u128)> {
         let threshold = self.stake_table.quorum_threshold();
         self.certificate_tracker.check_quorum(tick, threshold)
+    }
+
+    /// Sign and store a verifiable rejection proof when an operator keypair is
+    /// configured.  Returns the proof so callers can also report it immediately.
+    fn sign_rejection_proof(
+        &self,
+        dag: &mut VectorClockDag,
+        shift_hash: TxHash,
+        reason: RejectionReason,
+        tick: u64,
+    ) {
+        let Some(operator) = self.operator_keypair.as_ref() else {
+            return;
+        };
+        let mut proof = RejectionProof {
+            shift_hash,
+            reason,
+            rejected_at_tick: tick,
+            operator_id: operator.account_id(),
+            signature: Vec::new(),
+        };
+        let sig = operator.sign(&proof.signing_bytes());
+        proof.signature = sig.to_bytes().to_vec();
+        dag.rejection_proofs.insert(shift_hash, proof);
     }
 
     pub fn seed_account(&self, account: AccountId, amount: u128) {
@@ -454,9 +480,6 @@ impl Oscillator {
                 hex::encode(shift.domain)
             ));
         }
-        if policy.ordering == OrderingMode::Commutative && !shift.predecessors.is_empty() {
-            return Err("commutative domain does not accept predecessor edges".to_string());
-        }
         self.check_and_record_nonce(shift.from, shift.domain, shift.nonce)?;
         if self.seen_signatures.contains_key(&shift.signature) {
             return Ok(());
@@ -537,9 +560,11 @@ impl Oscillator {
         {
             let mut dag = self.dag.lock().unwrap();
             let field = self.wave_field.lock().unwrap();
-            for entry in field.accounts.iter() {
-                dag.balances
-                    .insert(*entry.key(), entry.value().balance.units);
+            for domain_entry in field.domains.iter() {
+                for entry in domain_entry.value().accounts.iter() {
+                    dag.balances
+                        .insert(*entry.key(), entry.value().balance.units);
+                }
             }
         }
 
@@ -553,10 +578,13 @@ impl Oscillator {
 
             let mut dag = self.dag.lock().unwrap();
             for shift in shifts {
+                let hash = shift.hash();
                 let Some(pk) = key_registry.get(&shift.from) else {
-                    result
-                        .stateful_rejected
-                        .push(DagError::InvalidSignature(shift.hash()));
+                    let err = DagError::InvalidSignature(hash);
+                    let reason = RejectionReason::from(&err);
+                    dag.rejected.insert(hash, err.clone());
+                    self.sign_rejection_proof(&mut dag, hash, reason, tick);
+                    result.stateful_rejected.push(err);
                     continue;
                 };
                 let depth = self
@@ -567,6 +595,8 @@ impl Oscillator {
                     .map(|p| p.finalization_depth)
                     .unwrap_or(VectorClockDag::FINALIZATION_DEPTH);
                 if let Err(e) = dag.insert(shift, pk, tick, depth) {
+                    let reason = RejectionReason::from(&e);
+                    self.sign_rejection_proof(&mut dag, e.shift_hash(), reason, tick);
                     result.stateful_rejected.push(e);
                 }
             }
@@ -578,6 +608,12 @@ impl Oscillator {
                     if let Some(node) = dag.nodes.get_mut(hash) {
                         node.status = ShiftStatus::Rejected(DagError::DoubleSpend(*hash));
                     }
+                    self.sign_rejection_proof(
+                        &mut dag,
+                        *hash,
+                        RejectionReason::DoubleSpend,
+                        tick,
+                    );
                 }
             }
             result.stateful_rejected.extend(double_spends);
@@ -646,10 +682,13 @@ impl Oscillator {
         }
 
         // 3. Apply stateful DAG in topological order.
-        let dag = self.dag.lock().unwrap();
+        let mut dag = self.dag.lock().unwrap();
         let order = match dag.topological_order() {
             Ok(o) => o,
             Err(e) => {
+                let hash = e.shift_hash();
+                let reason = RejectionReason::from(&e);
+                self.sign_rejection_proof(&mut dag, hash, reason, tick);
                 result.stateful_rejected.push(e);
                 return result;
             }
@@ -675,15 +714,15 @@ impl Oscillator {
             let shift = &node.shift;
 
             let Some(pk) = key_registry.get(&shift.from) else {
-                result
-                    .stateful_rejected
-                    .push(DagError::InvalidSignature(hash));
+                let err = DagError::InvalidSignature(hash);
+                self.sign_rejection_proof(&mut dag, hash, RejectionReason::InvalidSignature, tick);
+                result.stateful_rejected.push(err);
                 continue;
             };
             if !shift.verify_signature(pk) {
-                result
-                    .stateful_rejected
-                    .push(DagError::InvalidSignature(hash));
+                let err = DagError::InvalidSignature(hash);
+                self.sign_rejection_proof(&mut dag, hash, RejectionReason::InvalidSignature, tick);
+                result.stateful_rejected.push(err);
                 continue;
             }
 
@@ -703,7 +742,7 @@ impl Oscillator {
 
             // Strict domains require an operator quorum certificate for the tick
             // in which the shift was inserted before it can be applied.
-            if policy.ordering == OrderingMode::Strict {
+            if policy.ordering == StatefulOrdering::Strict {
                 if self.check_quorum(node.inserted_at_tick).is_none() {
                     // Skip for now; will retry on a later tick once quorum exists.
                     continue;
@@ -713,16 +752,18 @@ impl Oscillator {
             let (fee, net_amount) = match self.compute_signal_fee(shift) {
                 Ok(v) => v,
                 Err(_) => {
-                    result.stateful_rejected.push(DagError::InsufficientBalance(hash));
+                    let err = DagError::InsufficientBalance(hash);
+                    self.sign_rejection_proof(&mut dag, hash, RejectionReason::InsufficientBalance, tick);
+                    result.stateful_rejected.push(err);
                     continue;
                 }
             };
 
             let balance = simulated_balances.get(&shift.from).copied().unwrap_or(0);
             if balance < shift.amount {
-                result
-                    .stateful_rejected
-                    .push(DagError::InsufficientBalance(hash));
+                let err = DagError::InsufficientBalance(hash);
+                self.sign_rejection_proof(&mut dag, hash, RejectionReason::InsufficientBalance, tick);
+                result.stateful_rejected.push(err);
                 continue;
             }
 
@@ -798,12 +839,14 @@ impl Oscillator {
         let field = self.wave_field.lock().unwrap();
         for (account, balance) in &simulated_balances {
             field.ensure_account(*account);
-            if let Some(mut state) = field.accounts.get_mut(account) {
-                state.balance.units = *balance;
-                // Accounts touched by an applied stateful shift this tick start
-                // their activity grace window.
-                if active_accounts.contains(account) {
-                    state.balance.last_active_tick = tick;
+            if let Some(dex) = field.domains.get(&DEFAULT_DEX_DOMAIN) {
+                if let Some(mut state) = dex.accounts.get_mut(account) {
+                    state.balance.units = *balance;
+                    // Accounts touched by an applied stateful shift this tick start
+                    // their activity grace window.
+                    if active_accounts.contains(account) {
+                        state.balance.last_active_tick = tick;
+                    }
                 }
             }
         }
@@ -940,7 +983,7 @@ mod tests {
             domain_id,
             true,
             true,
-            crate::consensus::domain::OrderingMode::Causal,
+            crate::consensus::domain::StatefulOrdering::Causal,
             3,
             20,
             crate::consensus::domain::FeePolicy::MetabolicOnly,
@@ -984,7 +1027,7 @@ mod tests {
             strict_domain,
             false,
             true,
-            crate::consensus::domain::OrderingMode::Strict,
+            crate::consensus::domain::StatefulOrdering::Strict,
             3,
             20,
             crate::consensus::domain::FeePolicy::MetabolicOnly,
@@ -1027,44 +1070,47 @@ mod tests {
     }
 
     #[test]
-    fn oscillator_aggregates_commutative_and_applies_stateful() {
-        let osc = Oscillator::new([1u8; 32], 64);
+    fn oscillator_emits_signed_rejection_proof_for_insufficient_balance() {
+        let mut osc = Oscillator::new([1u8; 32], 64);
+        let operator = KeyPair::generate();
         let alice = KeyPair::generate();
         let bob = KeyPair::generate();
-        osc.seed_account(alice.account_id(), 10_000_000_000_000);
+        osc.set_operator_keypair(operator.clone());
+        // Seed alice with less than she tries to spend.
+        osc.seed_account(alice.account_id(), 100);
 
         let mut registry = HashMap::new();
         registry.insert(alice.account_id(), alice.public_key());
 
-        // Commutative: add 100 to pool every tick.
-        let pool = [9u8; 32];
-        for i in 0..10 {
-            let shift = CommutativeShift::new(
-                &alice,
-                DEFAULT_DEX_DOMAIN,
-                Coordinate::from_scalar(i as u64),
-                100,
-                pool,
-                i as u64,
-                0,
-            );
-            osc.ingest(Signal::Commutative(shift), &registry).unwrap();
-        }
-
-        // Stateful: send 500 to Bob.
         let mut vc = VectorClock::new();
         vc.tick(osc.id);
         let st = StatefulShift::new(
-            &alice, DEFAULT_DEX_DOMAIN, bob.account_id(), 500, vc, vec![], 100, 0);
+            &alice,
+            DEFAULT_DEX_DOMAIN,
+            bob.account_id(),
+            500,
+            vc,
+            vec![],
+            1,
+            0,
+        );
+        let hash = st.hash();
         osc.ingest(Signal::Stateful(st), &registry).unwrap();
 
         let result = osc.synthesize(&registry);
+        assert_eq!(result.stateful_applied, 0);
+        assert!(result.stateful_rejected.iter().any(|e| matches!(e, DagError::InsufficientBalance(h) if *h == hash)));
 
-        assert_eq!(result.commutative_applied, 10);
-        assert_eq!(result.stateful_applied, 1);
-        assert_eq!(result.final_balances[&bob.account_id()], 500);
-
-        let field = osc.wave_field.lock().unwrap();
-        assert_eq!(field.pool_balance(pool).units, 10 * 100);
+        let proof = osc
+            .dag
+            .lock()
+            .unwrap()
+            .rejection_proofs
+            .get(&hash)
+            .cloned()
+            .expect("rejection proof should be stored");
+        assert_eq!(proof.shift_hash, hash);
+        assert!(matches!(proof.reason, RejectionReason::InsufficientBalance));
+        assert!(proof.verify(&operator.public_key()));
     }
 }

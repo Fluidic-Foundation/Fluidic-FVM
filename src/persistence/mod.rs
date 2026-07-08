@@ -1,8 +1,8 @@
 use crate::consensus::dag::{DagError, ShiftStatus};
 use crate::consensus::Oscillator;
-use crate::crypto::{AccountId, StatefulShift};
+use crate::crypto::{AccountId, DomainId, StatefulShift};
 use crate::evm::EvmTxStatus;
-use crate::field::wave_field::{AccountState, Balance};
+use crate::field::wave_field::Balance;
 use crate::operator::stake::{OperatorEntry, StakeTable, StakingConfig};
 use ethers_core::types::{Address as EvmAddress, H256};
 use revm::InMemoryDB;
@@ -17,8 +17,8 @@ use std::sync::Arc;
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
     version: u32,
-    accounts: Vec<(String, AccountStateSer)>,
-    pools: Vec<(String, u128)>,
+    accounts: Vec<(String, String, AccountStateSer)>,
+    pools: Vec<(String, String, u128)>,
     dag_nodes: Vec<DagNodeSer>,
     dag_balances: Vec<(String, u128)>,
     total_burned: u128,
@@ -122,26 +122,29 @@ pub fn save(osc: &Oscillator, path: impl AsRef<Path>) -> Result<(), String> {
     let dag = osc.dag.lock().map_err(|e| e.to_string())?;
     let wave = osc.wave_field.lock().map_err(|e| e.to_string())?;
 
-    let accounts: Vec<_> = wave
-        .accounts
-        .iter()
-        .map(|entry| {
-            (
+    let mut accounts: Vec<(String, String, AccountStateSer)> = Vec::new();
+    for domain_entry in wave.domains.iter() {
+        let domain_hex = hex::encode(*domain_entry.key());
+        for entry in domain_entry.value().accounts.iter() {
+            accounts.push((
                 account_to_hex(entry.key()),
+                domain_hex.clone(),
                 AccountStateSer {
                     units: entry.value().balance.units,
                     decays: entry.value().balance.decays,
                     last_active_tick: entry.value().balance.last_active_tick,
                 },
-            )
-        })
-        .collect();
+            ));
+        }
+    }
 
-    let pools: Vec<_> = wave
-        .pools
-        .iter()
-        .map(|entry| (pool_to_hex(entry.key()), entry.value().units))
-        .collect();
+    let mut pools: Vec<(String, String, u128)> = Vec::new();
+    for domain_entry in wave.domains.iter() {
+        let domain_hex = hex::encode(*domain_entry.key());
+        for entry in domain_entry.value().pools.iter() {
+            pools.push((pool_to_hex(entry.key()), domain_hex.clone(), entry.value().units));
+        }
+    }
 
     let dag_nodes: Vec<_> = dag
         .nodes
@@ -197,7 +200,7 @@ pub fn save(osc: &Oscillator, path: impl AsRef<Path>) -> Result<(), String> {
     let stake_table = osc.stake_table.to_snapshot();
 
     let snapshot = Snapshot {
-        version: 1,
+        version: 2,
         accounts,
         pools,
         dag_nodes,
@@ -230,42 +233,63 @@ pub fn load(osc: &mut Oscillator, path: impl AsRef<Path>) -> Result<(), String> 
     let json = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let snapshot: Snapshot = serde_json::from_str(&json).map_err(|e| e.to_string())?;
 
-    if snapshot.version != 1 {
-        return Err(format!("unsupported snapshot version {}", snapshot.version));
+    if snapshot.version != 2 {
+        return Err(format!(
+            "unsupported snapshot version {} (expected 2)",
+            snapshot.version
+        ));
     }
 
     // Consistent lock order with synthesis: dag first, then wave_field.
     let mut dag = osc.dag.lock().map_err(|e| e.to_string())?;
     let wave = osc.wave_field.lock().map_err(|e| e.to_string())?;
 
-    wave.accounts.clear();
-    for (hex, state) in snapshot.accounts {
-        if let Some(id) = account_from_hex(&hex) {
-            wave.accounts.insert(
-                id,
-                AccountState {
-                    balance: Balance {
-                        units: state.units,
-                        decays: state.decays,
-                        last_active_tick: state.last_active_tick,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            );
+    wave.domains.clear();
+    for (hex, domain_hex, state) in snapshot.accounts {
+        if let (Some(id), Some(domain_bytes)) = (
+            account_from_hex(&hex),
+            hex::decode(&domain_hex).ok().and_then(|b| {
+                if b.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&b);
+                    Some(arr)
+                } else {
+                    None
+                }
+            }),
+        ) {
+            let domain: DomainId = domain_bytes;
+            wave.ensure_account_in_domain(domain, id);
+            if let Some(domain_state) = wave.domains.get(&domain) {
+                if let Some(mut account) = domain_state.accounts.get_mut(&id) {
+                    account.balance.units = state.units;
+                    account.balance.decays = state.decays;
+                    account.balance.last_active_tick = state.last_active_tick;
+                }
+            }
         }
     }
 
-    wave.pools.clear();
-    for (hex, units) in snapshot.pools {
-        if let Some(id) = pool_from_hex(&hex) {
-            wave.pools.insert(
-                id,
-                Balance {
-                    units,
-                    ..Default::default()
-                },
-            );
+    for (hex, domain_hex, units) in snapshot.pools {
+        if let (Some(id), Some(domain_bytes)) = (
+            pool_from_hex(&hex),
+            hex::decode(&domain_hex).ok().and_then(|b| {
+                if b.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&b);
+                    Some(arr)
+                } else {
+                    None
+                }
+            }),
+        ) {
+            let domain: DomainId = domain_bytes;
+            wave.ensure_domain(domain);
+            if let Some(domain_state) = wave.domains.get(&domain) {
+                domain_state
+                    .pools
+                    .insert(id, Balance { units, ..Default::default() });
+            }
         }
     }
 
