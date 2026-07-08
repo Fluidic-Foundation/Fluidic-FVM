@@ -64,13 +64,14 @@ OSCILLATOR_ID=12345 API_PORT=8080 BIND_ADDR=0.0.0.0:7000 \
 | `FLUIDIC_DATA_DIR` | `./data` | Directory for snapshots, peer cache, and persisted identity |
 | `PUBLIC_ENDPOINT` | `''` | Publicly reachable endpoint advertised to peers (`tcp://`, `wss://`, `ws://`). Setting this enables full operator mode |
 | `FLUIDIC_CLIENT_MODE` | `auto` | `true` = light client, `false` = full operator, default = light client when `PUBLIC_ENDPOINT` is empty |
+| `SYNC_PEERS` | `''` | Comma-separated HTTP API URLs to sync state from before synthesizing (required for safe full-node join) |
 
 ## What happens when it starts
 
 1. A deterministic Ed25519 keypair is derived from `OSCILLATOR_ID`.
 2. The node decides its role:
    - **Light client** (default when `PUBLIC_ENDPOINT` is empty): follows operator certificates, verifies quorum via the light client, and exposes the API. It does not stake or synthesize.
-   - **Full operator** (when `PUBLIC_ENDPOINT` is advertised): seeds a genesis balance, locks it as stake, and produces BFT synthesis certificates.
+   - **Full operator** (when `PUBLIC_ENDPOINT` is advertised): connects to `SYNC_PEERS` (or `PEERS`), downloads the current state, and only then stakes genesis balance and synthesizes.
 3. It discovers peers through signed genesis bootstrap records (DNS TXT / HTTPS), the public BitTorrent Mainline DHT, and LAN mDNS, plus any explicit `PEERS`.
 4. It opens the API server and joins the gossip mesh.
 5. Every `SYNTHESIS_INTERVAL_MS` it runs a synthesis tick. Operators burn metabolic value, finalize shifts, sign certificates, and gossip them. Light clients ingest and verify certificates from operators.
