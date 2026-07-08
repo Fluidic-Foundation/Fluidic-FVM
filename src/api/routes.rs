@@ -1226,24 +1226,8 @@ async fn get_sync_state(State(state): State<Arc<ApiState>>) -> impl IntoResponse
         let certs = state.oscillator.certificates.read().unwrap();
         certs
             .iter()
-            .map(|(tick, cert)| {
-                serde_json::json!({
-                    "tick": *tick,
-                    "operator": cert.operator.to_string(),
-                    "commutative_applied": cert.commutative_applied,
-                    "stateful_applied": cert.stateful_applied,
-                    "evm_applied": cert.evm_applied,
-                    "commutative_root": hex::encode(cert.commutative_root),
-                    "stateful_root": hex::encode(cert.stateful_root),
-                    "balances_root": hex::encode(cert.balances_root),
-                    "stake_root": hex::encode(cert.stake_root),
-                    "reward_root": hex::encode(cert.reward_root),
-                    "evm_root": hex::encode(cert.evm_root),
-                    "metabolic_burned": cert.metabolic_burned.to_string(),
-                    "timestamp_ns": cert.timestamp_ns,
-                    "signature": hex::encode(&cert.signature),
-                })
-            })
+            .map(|(_tick, cert)| serde_json::to_value(cert).unwrap_or(serde_json::Value::Null))
+            .filter(|v| !v.is_null())
             .collect()
     };
 

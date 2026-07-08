@@ -26,8 +26,8 @@ pub struct PeerDirectory {
 struct PeerDirectoryInner {
     /// endpoint -> announcement
     by_endpoint: HashMap<String, PeerAnnouncement>,
-    /// operator -> set of endpoints
-    by_operator: HashMap<AccountId, Vec<String>>,
+    /// operator hex -> set of endpoints
+    by_operator: HashMap<String, Vec<String>>,
 }
 
 impl PeerDirectory {
@@ -116,12 +116,13 @@ impl PeerDirectory {
 
             // Maintain operator index.
             let operator = ann.operator;
+            let operator_hex = operator.to_string();
             let endpoint = ann.endpoint.clone();
             let timestamps: Vec<u64> = {
                 let by_endpoint = &inner.by_endpoint;
                 inner
                     .by_operator
-                    .get(&operator)
+                    .get(&operator_hex)
                     .map(|ops| {
                         ops.iter()
                             .filter_map(|ep| by_endpoint.get(ep).map(|a| a.timestamp_ns))
@@ -131,7 +132,7 @@ impl PeerDirectory {
             };
             let mut ops = inner
                 .by_operator
-                .get_mut(&operator)
+                .get_mut(&operator_hex)
                 .map(|v| v.clone())
                 .unwrap_or_default();
             if !ops.contains(&endpoint) {
@@ -161,7 +162,7 @@ impl PeerDirectory {
                 ops = keep;
             }
 
-            inner.by_operator.insert(operator, ops);
+            inner.by_operator.insert(operator_hex, ops);
             for ep in &removed {
                 inner.by_endpoint.remove(ep);
             }
