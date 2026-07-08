@@ -22,6 +22,8 @@ docker run -d --name fluidic-node \
 
 Use a **unique numeric** `OSCILLATOR_ID`. The identity is deterministic, so two nodes with the same ID share a keypair and will slash each other. Mount `/data` so your snapshot and identity survive restarts.
 
+By default this runs as a **light client** (client mode): it follows the operator mesh, verifies synthesis certificates, and exposes the API, but does not synthesize or stake. If you advertise a `PUBLIC_ENDPOINT`, the node runs as a full operator instead. Set `FLUIDIC_CLIENT_MODE=false` to force full-node behavior behind NAT.
+
 Or use the installer:
 
 ```bash
@@ -57,16 +59,18 @@ OSCILLATOR_ID=12345 API_PORT=8080 BIND_ADDR=0.0.0.0:7000 \
 | `SNAPSHOT_INTERVAL_MS` | `5000` | How often the state snapshot is saved to disk |
 | `ENABLE_GENERATOR` | `false` | Emit synthetic commutative traffic (do not enable on public testnet) |
 | `FLUIDIC_DATA_DIR` | `./data` | Directory for snapshots, peer cache, and persisted identity |
-| `PUBLIC_ENDPOINT` | `''` | Publicly reachable endpoint advertised to peers (`tcp://`, `wss://`, `ws://`) |
+| `PUBLIC_ENDPOINT` | `''` | Publicly reachable endpoint advertised to peers (`tcp://`, `wss://`, `ws://`). Setting this enables full operator mode |
+| `FLUIDIC_CLIENT_MODE` | `auto` | `true` = light client, `false` = full operator, default = light client when `PUBLIC_ENDPOINT` is empty |
 
 ## What happens when it starts
 
 1. A deterministic Ed25519 keypair is derived from `OSCILLATOR_ID`.
-2. The node seeds a genesis balance for its own operator account.
-3. It locks that balance as stake so the node is immediately eligible to produce BFT synthesis certificates.
-4. It discovers peers through signed genesis bootstrap records (DNS TXT / HTTPS), the public BitTorrent Mainline DHT, and LAN mDNS, plus any explicit `PEERS`.
-5. It opens the API server and joins the gossip mesh.
-6. Every `SYNTHESIS_INTERVAL_MS` it runs a synthesis tick: burns metabolic value, finalizes stateful/commutative/EVM shifts, signs a certificate, and gossips it to peers.
+2. The node decides its role:
+   - **Light client** (default when `PUBLIC_ENDPOINT` is empty): follows operator certificates, verifies quorum via the light client, and exposes the API. It does not stake or synthesize.
+   - **Full operator** (when `PUBLIC_ENDPOINT` is advertised): seeds a genesis balance, locks it as stake, and produces BFT synthesis certificates.
+3. It discovers peers through signed genesis bootstrap records (DNS TXT / HTTPS), the public BitTorrent Mainline DHT, and LAN mDNS, plus any explicit `PEERS`.
+4. It opens the API server and joins the gossip mesh.
+5. Every `SYNTHESIS_INTERVAL_MS` it runs a synthesis tick. Operators burn metabolic value, finalize shifts, sign certificates, and gossip them. Light clients ingest and verify certificates from operators.
 
 Your node is online when you see `API server listening on 0.0.0.0:8080`. Point a browser or the SDK at `http://localhost:8080`.
 

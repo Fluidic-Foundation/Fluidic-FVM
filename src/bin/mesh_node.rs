@@ -4,6 +4,7 @@ use fluidic::consensus::Oscillator;
 use fluidic::crypto::keys::KeyPair;
 use fluidic::crypto::{CommutativeShift, Signal, StakeShift, DEFAULT_DEX_DOMAIN};
 use fluidic::field::coordinates::Coordinate;
+use fluidic::light_client::LightClient;
 use fluidic::network::{
     fetch_bootstrap_url, mdns_announce, mdns_browse, resolve_txt_seeds, DhtDiscovery,
     EndpointScheme, PeerAnnouncement, TcpGossipNode, WsGossipNode, DEFAULT_NETWORK_ID,
@@ -218,6 +219,31 @@ async fn main() {
         .unwrap_or_else(|_| "true".to_string())
         .eq_ignore_ascii_case("true");
 
+    let public_endpoint = std::env::var("PUBLIC_ENDPOINT").unwrap_or_else(|_| {
+        // Default to the bind address if it looks like a public IP; otherwise
+        // run as a leaf node.  Leaf nodes still bind a local TCP gossip socket
+        // so they can dial TCP peers discovered via DHT; inbound connections
+        // simply won't reach them behind NAT, which is fine for normal users.
+        if bind_addr.ip().is_unspecified() || bind_addr.ip().is_loopback() {
+            String::new()
+        } else {
+            format!("tcp://{}", bind_addr)
+        }
+    });
+
+    // Leaf nodes (no public inbound address) default to client/light mode.  This
+    // matches whitepaper section 8.2: clients submit Signals and can run light
+    // nodes, while operators explicitly advertise PUBLIC_ENDPOINT.  Set
+    // FLUIDIC_CLIENT_MODE=false to force full-node behavior behind NAT.
+    let client_mode = match std::env::var("FLUIDIC_CLIENT_MODE").as_deref() {
+        Ok("true") => true,
+        Ok("false") => false,
+        _ => public_endpoint.is_empty(),
+    };
+    if client_mode {
+        info!("running in client mode: will verify operator certificates instead of synthesizing");
+    }
+
     let dht_discovery = if enable_dht {
         match DhtDiscovery::new(&network_id) {
             Ok(d) => Some(d),
@@ -275,17 +301,6 @@ async fn main() {
         .parse()
         .expect("GENERATOR_INTERVAL_MS must be a number");
 
-    let public_endpoint = std::env::var("PUBLIC_ENDPOINT").unwrap_or_else(|_| {
-        // Default to the bind address if it looks like a public IP; otherwise
-        // run as a leaf node.  Leaf nodes still bind a local TCP gossip socket
-        // so they can dial TCP peers discovered via DHT; inbound connections
-        // simply won't reach them behind NAT, which is fine for normal users.
-        if bind_addr.ip().is_unspecified() || bind_addr.ip().is_loopback() {
-            String::new()
-        } else {
-            format!("tcp://{}", bind_addr)
-        }
-    });
 
     let discovery_mode = match EndpointScheme::parse(&public_endpoint) {
         Some((EndpointScheme::Tcp, _)) => DiscoveryMode::Tcp,
@@ -312,39 +327,51 @@ async fn main() {
 
     let oscillator = Arc::new(oscillator);
 
-    // Seed genesis balance for the local operator on first boot and lock it as
-    // stake so a fresh node is immediately eligible to synthesize certificates.
-    let genesis_balance = 1_000_000_000_000_000_000u128;
     let local_account = local_keypair.account_id();
-    if oscillator
-        .wave_field
-        .lock()
-        .unwrap()
-        .account_balance(local_account)
-        .units
-        == 0
-    {
-        oscillator.seed_account(local_account, genesis_balance);
-    }
-    let genesis_stake = StakeShift::sign(
-        &local_keypair,
-        genesis_balance,
-        0,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0),
-    );
-    if !oscillator.apply_stake(&genesis_stake) {
-        warn!("failed to lock genesis stake for {}", local_account);
-    }
-
+    let genesis_balance = 1_000_000_000_000_000_000u128;
     let mut api_state = Arc::new(ApiState::new(oscillator.clone()));
     Arc::get_mut(&mut api_state)
         .unwrap()
         .load_peer_directory(&peer_cache_path());
-    api_state.set_operator_keypair(local_keypair.clone());
-    api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
+
+    if client_mode {
+        // Client nodes follow the operator mesh; they do not stake or synthesize.
+        api_state.set_operator_keypair(local_keypair.clone());
+        api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
+    } else {
+        // Seed genesis balance for the local operator on first boot and lock it as
+        // stake so a fresh node is immediately eligible to synthesize certificates.
+        if oscillator
+            .wave_field
+            .lock()
+            .unwrap()
+            .account_balance(local_account)
+            .units
+            == 0
+        {
+            oscillator.seed_account(local_account, genesis_balance);
+        }
+        let genesis_stake = StakeShift::sign(
+            &local_keypair,
+            genesis_balance,
+            0,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0),
+        );
+        if !oscillator.apply_stake(&genesis_stake) {
+            warn!("failed to lock genesis stake for {}", local_account);
+        }
+        api_state.set_operator_keypair(local_keypair.clone());
+        api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
+    }
+
+    let light_client = if client_mode {
+        Some(LightClient::new(oscillator.stake_table.clone()))
+    } else {
+        None
+    };
 
     // Railway (and some other hosts) provide the public HTTP port via the
     // standard PORT variable. Use API_PORT if set explicitly, otherwise fall
@@ -484,28 +511,31 @@ async fn main() {
     // Build the local operator's stake announcement.  We re-announce it
     // reliably on an interval so peers that connect after we start still learn
     // our operator public key and can verify our synthesis certificates.
-    let timestamp_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let stake_signal = Signal::Stake(StakeShift::sign(
-        &local_keypair,
-        genesis_balance,
-        0,
-        timestamp_ns,
-    ));
+    // Client nodes do not operate, so they have no stake to announce.
+    if !client_mode {
+        let timestamp_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let stake_signal = Signal::Stake(StakeShift::sign(
+            &local_keypair,
+            genesis_balance,
+            0,
+            timestamp_ns,
+        ));
 
-    let announce_outbound = outbound.clone();
-    tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(3));
-        loop {
-            ticker.tick().await;
-            match announce_outbound.send(stake_signal.clone()).await {
-                Ok(_) => trace!("re-announced operator stake"),
-                Err(e) => warn!("stake re-announce send error: {}", e),
+        let announce_outbound = outbound.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(3));
+            loop {
+                ticker.tick().await;
+                match announce_outbound.send(stake_signal.clone()).await {
+                    Ok(_) => trace!("re-announced operator stake"),
+                    Err(e) => warn!("stake re-announce send error: {}", e),
+                }
             }
-        }
-    });
+        });
+    }
 
     // Wait for concurrent peer discovery to finish before connecting.
     if let Some(task) = seed_dns_task {
@@ -621,6 +651,7 @@ async fn main() {
     // Ingest loop: apply incoming phase-shifts to the oscillator.
     let osc_ingest = oscillator.clone();
     let api_state_ingest = api_state.clone();
+    let light_client_ingest = light_client.clone();
     let ping_outbound = outbound.clone();
     let mut inbound = match (gossip.take(), ws_gossip.take()) {
         (Some(g), _) => g.inbound,
@@ -643,7 +674,9 @@ async fn main() {
                     api_state_ingest.register_key(reg.usdc_account, vk);
                     api_state_ingest.register_derived(reg.wave_account, reg.account);
                     api_state_ingest.register_derived(reg.usdc_account, reg.account);
-                    osc_ingest.apply_registration(&reg);
+                    if !client_mode {
+                        osc_ingest.apply_registration(&reg);
+                    }
                 }
                 Signal::Stake(stake) => {
                     // Learn the operator's public key from the stake announcement
@@ -651,8 +684,19 @@ async fn main() {
                     // before we do.
                     if let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&stake.public_key) {
                         api_state_ingest.register_key(stake.operator, vk);
+                        if let Some(ref lc) = light_client_ingest {
+                            lc.register_key(stake.operator, vk);
+                        }
                     }
-                    if !osc_ingest.apply_stake(&stake) {
+                    if client_mode {
+                        // Clients trust observed operator stakes without requiring
+                        // local liquid balance; they are not synthesizing themselves.
+                        if stake.verify() {
+                            osc_ingest.stake_table.stake(stake.operator, stake.amount);
+                        } else {
+                            warn!("rejected invalid stake gossip from {}", stake.operator);
+                        }
+                    } else if !osc_ingest.apply_stake(&stake) {
                         warn!("rejected invalid stake gossip from {}", stake.operator);
                     }
                 }
@@ -668,11 +712,27 @@ async fn main() {
                     api_state_ingest.record_network_latency_ms(rtt_ms);
                 }
                 Signal::Certificate(cert) => {
-                    let registry = api_state_ingest.key_registry();
-                    if let Err(e) = osc_ingest.ingest_certificate(cert.clone(), &registry) {
-                        warn!("rejected peer certificate: {:?}", e);
+                    if let Some(ref lc) = light_client_ingest {
+                        match lc.ingest_certificate(cert) {
+                            Ok(Some(view)) => {
+                                info!(
+                                    "light client finalized tick {} roots comm={} state={} evm={}",
+                                    lc.latest_finalized_tick(),
+                                    hex::encode(view.commutative_root),
+                                    hex::encode(view.stateful_root),
+                                    hex::encode(view.evm_root)
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(e) => warn!("light client rejected certificate: {}", e),
+                        }
                     } else {
-                        trace!("accepted certificate for tick {} from {}", cert.tick, cert.operator);
+                        let registry = api_state_ingest.key_registry();
+                        if let Err(e) = osc_ingest.ingest_certificate(cert.clone(), &registry) {
+                            warn!("rejected peer certificate: {:?}", e);
+                        } else {
+                            trace!("accepted certificate for tick {} from {}", cert.tick, cert.operator);
+                        }
                     }
                 }
                 Signal::PeerAnnounce(anns) => {
@@ -683,9 +743,11 @@ async fn main() {
                     // Signal reaches the ingest loop the peer is trusted.
                 }
                 other => {
-                    let registry = api_state_ingest.key_registry();
-                    if let Err(e) = osc_ingest.ingest(other, &registry) {
-                        warn!("ingest error: {}", e);
+                    if !client_mode {
+                        let registry = api_state_ingest.key_registry();
+                        if let Err(e) = osc_ingest.ingest(other, &registry) {
+                            warn!("ingest error: {}", e);
+                        }
                     }
                 }
             }
@@ -790,25 +852,27 @@ async fn main() {
                 let result = oscillator.synthesize(&registry);
                 api_state.record_synthesis(&result);
 
-                // Gossip our own certificate so peers can form a quorum.
-                let tick = oscillator.synthesis_tick.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(1);
-                if let Some(cert) = oscillator.certificates.read().unwrap().get(&tick).cloned() {
-                    if let Err(e) = outbound.try_send(Signal::Certificate(cert)) {
-                        warn!("failed to gossip certificate: {}", e);
+                if !client_mode {
+                    // Gossip our own certificate so peers can form a quorum.
+                    let tick = oscillator.synthesis_tick.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(1);
+                    if let Some(cert) = oscillator.certificates.read().unwrap().get(&tick).cloned() {
+                        if let Err(e) = outbound.try_send(Signal::Certificate(cert)) {
+                            warn!("failed to gossip certificate: {}", e);
+                        }
                     }
-                }
 
-                // Check for a stake-weighted quorum on the previous tick.
-                if let Some((view, stake)) = oscillator.check_quorum(tick) {
-                    info!(
-                        "quorum reached for tick {} with stake {}/{} on roots comm={} state={} evm={}",
-                        tick,
-                        stake,
-                        oscillator.stake_table.total_stake(),
-                        hex::encode(view.commutative_root),
-                        hex::encode(view.stateful_root),
-                        hex::encode(view.evm_root),
-                    );
+                    // Check for a stake-weighted quorum on the previous tick.
+                    if let Some((view, stake)) = oscillator.check_quorum(tick) {
+                        info!(
+                            "quorum reached for tick {} with stake {}/{} on roots comm={} state={} evm={}",
+                            tick,
+                            stake,
+                            oscillator.stake_table.total_stake(),
+                            hex::encode(view.commutative_root),
+                            hex::encode(view.stateful_root),
+                            hex::encode(view.evm_root),
+                        );
+                    }
                 }
 
                 info!(
