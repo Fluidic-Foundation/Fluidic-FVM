@@ -277,7 +277,9 @@ async fn main() {
 
     let public_endpoint = std::env::var("PUBLIC_ENDPOINT").unwrap_or_else(|_| {
         // Default to the bind address if it looks like a public IP; otherwise
-        // assume the node is a leaf and should use WebSocket gossip.
+        // run as a leaf node.  Leaf nodes still bind a local TCP gossip socket
+        // so they can dial TCP peers discovered via DHT; inbound connections
+        // simply won't reach them behind NAT, which is fine for normal users.
         if bind_addr.ip().is_unspecified() || bind_addr.ip().is_loopback() {
             String::new()
         } else {
@@ -288,7 +290,9 @@ async fn main() {
     let discovery_mode = match EndpointScheme::parse(&public_endpoint) {
         Some((EndpointScheme::Tcp, _)) => DiscoveryMode::Tcp,
         Some((EndpointScheme::Ws | EndpointScheme::Wss, _)) => DiscoveryMode::WebSocket,
-        None => DiscoveryMode::WebSocket,
+        // Default leaf nodes to TCP so DHT-discovered TCP seeds are dialed
+        // immediately without requiring a hardcoded WebSocket bootstrap URL.
+        None => DiscoveryMode::Tcp,
     };
 
     // Derive a deterministic local keypair from the oscillator id so the node
@@ -447,9 +451,14 @@ async fn main() {
     api_state.set_gossip(outbound.clone());
 
     // Announce this public node to the Mainline DHT and via mDNS so LAN peers
-    // can find it even without a DNS seed or bootstrap URL.
+    // can find it even without a DNS seed or bootstrap URL.  When the public
+    // endpoint carries a different port than the local bind address (e.g. a
+    // Railway TCP proxy), announce the public port to the DHT so leaf nodes can
+    // dial the correct address.
     if discovery_mode == DiscoveryMode::Tcp && !public_endpoint.is_empty() {
-        let dht_port = bind_addr.port();
+        let dht_port = EndpointScheme::parse(&public_endpoint)
+            .and_then(|(_, rest)| rest.rsplit_once(':').and_then(|(_, p)| p.parse().ok()))
+            .unwrap_or_else(|| bind_addr.port());
         if let Some(dht) = dht_discovery.clone() {
             tokio::spawn(async move {
                 dht.announce_peer(dht_port).await;
@@ -457,7 +466,7 @@ async fn main() {
         }
         if let Some(ip) = local_announce_ip(bind_addr) {
             let instance_name = format!("fluidic-{}", hex::encode(&id[..8]));
-            match mdns_announce(&instance_name, &public_endpoint, ip, dht_port) {
+            match mdns_announce(&instance_name, &public_endpoint, ip, bind_addr.port()) {
                 Ok(daemon) => {
                     tokio::task::spawn_blocking(move || {
                         // Hold the daemon alive for the process lifetime.
