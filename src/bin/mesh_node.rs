@@ -338,9 +338,12 @@ async fn main() {
         // Client nodes follow the operator mesh; they do not stake or synthesize.
         api_state.set_operator_keypair(local_keypair.clone());
         api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
+    } else {
+        // Full nodes expose their operator identity immediately so the operator
+        // API is available while slower peer discovery and state sync finish.
+        api_state.set_operator_keypair(local_keypair.clone());
+        api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
     }
-    // Full-node setup (genesis stake) is deferred until after state sync so a
-    // fresh operator does not diverge from the network.
 
     // Railway (and some other hosts) provide the public HTTP port via the
     // standard PORT variable. Use API_PORT if set explicitly, otherwise fall
@@ -663,8 +666,6 @@ async fn main() {
         if !oscillator.apply_stake(&genesis_stake) {
             warn!("failed to lock genesis stake for {}", local_account);
         }
-        api_state.set_operator_keypair(local_keypair.clone());
-        api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
         None
     };
 

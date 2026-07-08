@@ -194,25 +194,62 @@ pub fn api_url_from_peer(peer: &str) -> Option<String> {
     None
 }
 
-/// Try to sync from any of the provided peer endpoints.
+/// Default timeout for each peer sync attempt.  Keep this short so a fresh
+/// seed/operator can fall back to its own genesis state quickly when the mesh
+/// is still bootstrapping.
+const SYNC_PEER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Try to sync from any of the provided peer endpoints concurrently.
+/// Returns the first successful snapshot, or an error if every peer fails.
 pub async fn sync_from_peers(
     osc: &Oscillator,
     peers: &[String],
 ) -> Result<(u64, HashMap<AccountId, ed25519_dalek::VerifyingKey>), String> {
-    for peer in peers {
-        let Some(url) = api_url_from_peer(peer) else {
-            continue;
-        };
-        match fetch_sync_state(&url).await {
-            Ok(state) => {
-                let tick = state.synthesis_tick;
-                let registry = apply_sync_state(osc, state)?;
-                return Ok((tick, registry));
-            }
-            Err(e) => {
-                tracing::warn!("sync from {} failed: {}", url, e);
-            }
-        }
+    sync_from_peers_with_timeout(osc, peers, SYNC_PEER_TIMEOUT).await
+}
+
+/// Try to sync from any of the provided peer endpoints concurrently with a
+/// configurable per-peer timeout.
+pub async fn sync_from_peers_with_timeout(
+    osc: &Oscillator,
+    peers: &[String],
+    timeout: Duration,
+) -> Result<(u64, HashMap<AccountId, ed25519_dalek::VerifyingKey>), String> {
+    if peers.is_empty() {
+        return Err("no sync peers provided".to_string());
     }
-    Err("failed to sync from any peer".to_string())
+
+    let futs: Vec<_> = peers
+        .iter()
+        .filter_map(|peer| api_url_from_peer(peer))
+        .map(|url| {
+            let url_for_log = url.clone();
+            Box::pin(async move {
+                match tokio::time::timeout(timeout, fetch_sync_state(&url)).await {
+                    Ok(Ok(state)) => Ok(state),
+                    Ok(Err(e)) => {
+                        tracing::warn!("sync from {} failed: {}", url_for_log, e);
+                        Err(e)
+                    }
+                    Err(_) => {
+                        tracing::warn!("sync from {} timed out after {:?}", url_for_log, timeout);
+                        Err(format!("timeout after {:?}", timeout))
+                    }
+                }
+            })
+        })
+        .collect();
+
+    if futs.is_empty() {
+        return Err("no reachable sync peer URLs".to_string());
+    }
+
+    match futures_util::future::select_ok(futs).await {
+        Ok((state, _)) => {
+            let tick = state.synthesis_tick;
+            let registry = apply_sync_state(osc, state)?;
+            Ok((tick, registry))
+        }
+        Err(_) => Err("failed to sync from any peer".to_string()),
+    }
 }
