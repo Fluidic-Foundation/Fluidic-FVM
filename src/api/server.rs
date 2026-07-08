@@ -98,12 +98,15 @@ pub async fn start_api_server(state: Arc<ApiState>, port: u16) -> Result<(), Str
 
     // Retry binding with SO_REUSEADDR. Railway (and similar platforms) may
     // keep the previous container's socket alive briefly during rolling
-    // deploys. We do NOT set SO_REUSEPORT because that would allow two
-    // processes to share the port and steal healthcheck connections.
+    // deploys, so we set SO_REUSEADDR and retry for up to several minutes.
+    // On Linux we also set SO_REUSEPORT: this lets Railway start the new
+    // container while the old one is still bound, avoiding a hard bind failure
+    // during rolling deploys.  The kernel load-balances healthchecks across
+    // both listeners only until the old container is stopped.
     let listener = {
         let mut last_err = None;
         let mut retries = 0;
-        const MAX_RETRIES: u32 = 30;
+        const MAX_RETRIES: u32 = 180;
         loop {
             match tokio::task::spawn_blocking(move || {
                 let socket = socket2::Socket::new(
@@ -113,6 +116,8 @@ pub async fn start_api_server(state: Arc<ApiState>, port: u16) -> Result<(), Str
                 )?;
                 socket.set_nonblocking(true)?;
                 socket.set_reuse_address(true)?;
+                #[cfg(target_os = "linux")]
+                socket.set_reuse_port(true)?;
                 socket.bind(&addr.into())?;
                 socket.listen(128)?;
                 Ok::<_, std::io::Error>(std::net::TcpListener::from(socket))
