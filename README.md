@@ -16,6 +16,7 @@ docker run -d --name fluidic-node \
   -p 8080:8080 -p 7000:7000 \
   -e OSCILLATOR_ID=12345 \
   -e FLUIDIC_DATA_DIR=/data \
+  -e PEERS=hayabusa.proxy.rlwy.net:34754 \
   -v "$HOME/fluidic-data:/data" \
   ghcr.io/fluidic-foundation/fluidic-fvm/mesh-node:latest
 ```
@@ -23,6 +24,8 @@ docker run -d --name fluidic-node \
 Use a **unique numeric** `OSCILLATOR_ID`. The identity is deterministic, so two nodes with the same ID share a keypair and will slash each other. Mount `/data` so your snapshot and identity survive restarts.
 
 By default this runs as a **light client** (client mode): it follows the operator mesh, verifies synthesis certificates, and exposes the API, but does not synthesize or stake. If you advertise a `PUBLIC_ENDPOINT`, the node runs as a full operator instead. Set `FLUIDIC_CLIENT_MODE=false` to force full-node behavior behind NAT.
+
+The node also discovers peers via the public BitTorrent Mainline DHT and LAN mDNS, so the explicit `PEERS` list is a bootstrap convenience rather than a hard requirement. If you have been running older/broken builds, delete `$HOME/fluidic-data/snapshot.json` and restart with a fresh snapshot to avoid stale state.
 
 Or use the installer:
 
