@@ -6,8 +6,8 @@ use fluidic::crypto::{CommutativeShift, Signal, StakeShift, DEFAULT_DEX_DOMAIN};
 use fluidic::field::coordinates::Coordinate;
 use fluidic::light_client::LightClient;
 use fluidic::network::{
-    fetch_bootstrap_url, mdns_announce, mdns_browse, resolve_txt_seeds, DhtDiscovery,
-    EndpointScheme, PeerAnnouncement, TcpGossipNode, WsGossipNode, DEFAULT_NETWORK_ID,
+    fetch_bootstrap_url, mdns_announce, mdns_browse, resolve_txt_seeds, sync_from_peers,
+    DhtDiscovery, EndpointScheme, PeerAnnouncement, TcpGossipNode, WsGossipNode, DEFAULT_NETWORK_ID,
 };
 use fluidic::persistence;
 use std::net::SocketAddr;
@@ -338,40 +338,9 @@ async fn main() {
         // Client nodes follow the operator mesh; they do not stake or synthesize.
         api_state.set_operator_keypair(local_keypair.clone());
         api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
-    } else {
-        // Seed genesis balance for the local operator on first boot and lock it as
-        // stake so a fresh node is immediately eligible to synthesize certificates.
-        if oscillator
-            .wave_field
-            .lock()
-            .unwrap()
-            .account_balance(local_account)
-            .units
-            == 0
-        {
-            oscillator.seed_account(local_account, genesis_balance);
-        }
-        let genesis_stake = StakeShift::sign(
-            &local_keypair,
-            genesis_balance,
-            0,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0),
-        );
-        if !oscillator.apply_stake(&genesis_stake) {
-            warn!("failed to lock genesis stake for {}", local_account);
-        }
-        api_state.set_operator_keypair(local_keypair.clone());
-        api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
     }
-
-    let light_client = if client_mode {
-        Some(LightClient::new(oscillator.stake_table.clone()))
-    } else {
-        None
-    };
+    // Full-node setup (genesis stake) is deferred until after state sync so a
+    // fresh operator does not diverge from the network.
 
     // Railway (and some other hosts) provide the public HTTP port via the
     // standard PORT variable. Use API_PORT if set explicitly, otherwise fall
@@ -635,6 +604,69 @@ async fn main() {
         }
     }
     info!("queued {} bootstrap peer(s)", peer_addrs.len());
+
+    // Full nodes must sync state from an existing peer before synthesizing, or
+    // their roots will diverge and they will break quorum.
+    let sync_peers: Vec<String> = std::env::var("SYNC_PEERS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let light_client = if client_mode {
+        Some(LightClient::new(oscillator.stake_table.clone()))
+    } else {
+        // Give peers a moment to establish the gossip connection before asking
+        // for a heavy sync snapshot.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let sync_targets = if sync_peers.is_empty() {
+            peers.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>()
+        } else {
+            sync_peers
+        };
+        match sync_from_peers(&oscillator,
+            &sync_targets,
+        ).await {
+            Ok((synced_tick, registry)) => {
+                info!("synced state to tick {} from peer", synced_tick);
+                // Merge the synced key registry into API state.
+                for (account, pk) in registry {
+                    api_state.register_key(account, pk);
+                }
+            }
+            Err(e) => {
+                warn!("state sync failed ({}); continuing with local genesis state", e);
+            }
+        }
+
+        // Seed genesis balance for the local operator and lock it as stake so it
+        // is eligible to synthesize certificates.
+        if oscillator
+            .wave_field
+            .lock()
+            .unwrap()
+            .account_balance(local_account)
+            .units
+            == 0
+        {
+            oscillator.seed_account(local_account, genesis_balance);
+        }
+        let genesis_stake = StakeShift::sign(
+            &local_keypair,
+            genesis_balance,
+            0,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0),
+        );
+        if !oscillator.apply_stake(&genesis_stake) {
+            warn!("failed to lock genesis stake for {}", local_account);
+        }
+        api_state.set_operator_keypair(local_keypair.clone());
+        api_state.register_key(local_keypair.account_id(), local_keypair.public_key());
+        None
+    };
 
     // Periodically save peer directory cache.
     let cache_dir = std::path::PathBuf::from(&data_dir);

@@ -1183,16 +1183,33 @@ async fn get_sync_state(State(state): State<Arc<ApiState>>) -> impl IntoResponse
         .synthesis_tick
         .load(std::sync::atomic::Ordering::SeqCst);
 
-    let balances: std::collections::HashMap<String, String> = {
+    let balances: std::collections::HashMap<String, serde_json::Value> = {
         let field = state.oscillator.wave_field.lock().unwrap();
         field
             .accounts
             .iter()
             .map(|entry| {
                 let acc = *entry.key();
-                let bal = entry.value().balance.units;
-                (hex::encode(acc.0), bal.to_string())
+                let bal = &entry.value().balance;
+                (
+                    hex::encode(acc.0),
+                    serde_json::json!({
+                        "units": bal.units.to_string(),
+                        "last_decay_tick": bal.last_decay_tick,
+                        "decays": bal.decays,
+                        "last_active_tick": bal.last_active_tick,
+                    }),
+                )
             })
+            .collect()
+    };
+
+    let pools: std::collections::HashMap<String, String> = {
+        let field = state.oscillator.wave_field.lock().unwrap();
+        field
+            .pools
+            .iter()
+            .map(|entry| (hex::encode(entry.key()), entry.value().units.to_string()))
             .collect()
     };
 
@@ -1212,30 +1229,40 @@ async fn get_sync_state(State(state): State<Arc<ApiState>>) -> impl IntoResponse
             .map(|(tick, cert)| {
                 serde_json::json!({
                     "tick": *tick,
-                    "hash": hex::encode(cert.hash()),
                     "operator": cert.operator.to_string(),
                     "commutative_applied": cert.commutative_applied,
                     "stateful_applied": cert.stateful_applied,
                     "evm_applied": cert.evm_applied,
-                    "roots": {
-                        "commutative": hex::encode(cert.commutative_root),
-                        "stateful": hex::encode(cert.stateful_root),
-                        "balances": hex::encode(cert.balances_root),
-                        "stake": hex::encode(cert.stake_root),
-                        "reward": hex::encode(cert.reward_root),
-                    },
+                    "commutative_root": hex::encode(cert.commutative_root),
+                    "stateful_root": hex::encode(cert.stateful_root),
+                    "balances_root": hex::encode(cert.balances_root),
+                    "stake_root": hex::encode(cert.stake_root),
+                    "reward_root": hex::encode(cert.reward_root),
+                    "evm_root": hex::encode(cert.evm_root),
+                    "metabolic_burned": cert.metabolic_burned.to_string(),
+                    "timestamp_ns": cert.timestamp_ns,
+                    "signature": hex::encode(&cert.signature),
                 })
             })
             .collect()
     };
 
+    let total_burned = *state
+        .oscillator
+        .metabolic_engine
+        .total_burned
+        .lock()
+        .unwrap();
+
     Json(serde_json::json!({
         "synthesis_tick": current_tick,
         "block_hash": hex::encode(block_hash_for(current_tick).as_bytes()),
         "balances": balances,
+        "pools": pools,
         "registry": registry,
         "stake_table": stake_table,
         "certificates": certificates,
+        "total_burned": total_burned.to_string(),
     }))
 }
 

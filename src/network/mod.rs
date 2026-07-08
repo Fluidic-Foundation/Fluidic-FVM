@@ -6,6 +6,7 @@ pub mod directory;
 pub mod genesis;
 pub mod mdns;
 pub mod node;
+pub mod sync;
 pub mod tcp_gossip;
 pub mod ws_gossip;
 
@@ -17,5 +18,6 @@ pub use directory::PeerDirectory;
 pub use genesis::{BootstrapRecord, GenesisOperator, HybridKeypair, SignedPeerAnnouncement, GENESIS_OPERATORS};
 pub use mdns::{announce as mdns_announce, browse_for as mdns_browse};
 pub use node::{NetworkNode, NetworkPacket, Transport, encode_packet};
+pub use sync::{api_url_from_peer, sync_from_peers};
 pub use tcp_gossip::TcpGossipNode;
 pub use ws_gossip::{WsGossipNode, handle_gossip_socket};

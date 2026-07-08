@@ -163,6 +163,24 @@ impl StakeTable {
         crate::state::MerkleAccumulator::root(&items)
     }
 
+    /// Replace the contents of this stake table with a snapshot.  Used when a
+    /// node syncs state from a peer.
+    pub fn load_from_snapshot(&self,
+        snapshot: BTreeMap<String, OperatorEntry>,
+    ) {
+        let mut ops = self.operators.write().unwrap();
+        ops.clear();
+        for (hex, entry) in snapshot {
+            let Ok(bytes) = hex::decode(&hex) else { continue };
+            if bytes.len() != 32 {
+                continue;
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            ops.insert(AccountId(arr), entry);
+        }
+    }
+
     /// Serialize the table for persistence.
     pub fn to_snapshot(&self) -> BTreeMap<String, OperatorEntry> {
         let ops = self.operators.read().unwrap();
