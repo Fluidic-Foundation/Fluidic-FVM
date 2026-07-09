@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Fluidic — Seed Pitch Deck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #03050a;
+      --bg-2: #0a0d14;
+      --panel: #0f131c;
+      --panel-2: #141a26;
+      --primary: #00f0ff;
+      --primary-dim: rgba(0, 240, 255, 0.12);
+      --secondary: #bdfff8;
+      --accent: #a78bfa;
+      --white: #f8fafc;
+      --muted: #94a3b8;
+      --muted-2: #64748b;
+      --border: rgba(148, 163, 184, 0.15);
+      --danger: #f87171;
+      --success: #34d399;
+      --warning: #fbbf24;
+    }
+
+    @page {
+      size: 1920px 1080px;
+      margin: 0;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--white);
+      font-family: 'Inter', sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .slide {
+      width: 1920px;
+      height: 1080px;
+      padding: 80px 110px;
+      position: relative;
+      overflow: hidden;
+      break-after: page;
+      display: flex;
+      flex-direction: column;
+      background: radial-gradient(1200px 800px at 85% 10%, rgba(0,240,255,0.08), transparent 60%),
+                  radial-gradient(900px 700px at 10% 90%, rgba(167,139,250,0.06), transparent 55%),
+                  var(--bg);
+    }
+
+    .slide:last-child { page-break-after: auto; }
+
+    .slide::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0,240,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,240,255,0.03) 1px, transparent 1px);
+      background-size: 64px 64px;
+      pointer-events: none;
+    }
+
+    .slide-cover { justify-content: center; }
+
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 40px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .brand-logo {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      display: grid;
+      place-items: center;
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 700;
+      font-size: 28px;
+      color: var(--bg);
+    }
+
+    .brand-name {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 92px;
+      font-weight: 700;
+      line-height: 1.0;
+      letter-spacing: -0.04em;
+      margin: 0 0 32px 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    h1 .gradient {
+      background: linear-gradient(135deg, var(--primary), var(--secondary), var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    h2 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 52px;
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      margin: 0 0 48px 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    h2 .subtitle {
+      display: block;
+      font-size: 22px;
+      font-weight: 400;
+      color: var(--muted);
+      margin-top: 12px;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 26px;
+      font-weight: 600;
+      margin: 0 0 16px 0;
+      color: var(--white);
+    }
+
+    p {
+      font-size: 22px;
+      line-height: 1.55;
+      color: var(--muted);
+      margin: 0 0 18px 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    .big-stat {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 96px;
+      font-weight: 700;
+      color: var(--primary);
+      line-height: 1;
+    }
+
+    .tagline {
+      font-size: 32px;
+      font-weight: 300;
+      color: var(--secondary);
+      margin-bottom: 64px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .deck-meta {
+      display: flex;
+      gap: 64px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .meta-item {
+      border-left: 3px solid var(--primary);
+      padding-left: 24px;
+    }
+
+    .meta-label {
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted-2);
+      margin-bottom: 8px;
+    }
+
+    .meta-value {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 34px;
+      font-weight: 600;
+      color: var(--white);
+    }
+
+    .slide-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 52px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .slide-header-left { max-width: 70%; }
+
+    .slide-number {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 18px;
+      font-weight: 500;
+      color: var(--primary);
+      border: 1px solid var(--border);
+      padding: 8px 16px;
+      border-radius: 999px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 44px;
+      flex: 1;
+      position: relative;
+      z-index: 1;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 36px;
+      flex: 1;
+      position: relative;
+      z-index: 1;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 28px;
+      flex: 1;
+      position: relative;
+      z-index: 1;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 32px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card-highlight {
+      background: linear-gradient(135deg, rgba(0,240,255,0.08), rgba(167,139,250,0.05));
+      border-color: rgba(0,240,255,0.25);
+    }
+
+    .card h3 {
+      font-size: 24px;
+      margin-bottom: 14px;
+      color: var(--white);
+    }
+
+    .card p {
+      font-size: 18px;
+      line-height: 1.5;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .card .icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: var(--primary-dim);
+      color: var(--primary);
+      display: grid;
+      place-items: center;
+      font-size: 22px;
+      margin-bottom: 20px;
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 700;
+    }
+
+    .metric-card {
+      text-align: center;
+      justify-content: center;
+    }
+
+    .metric-card .big-stat {
+      font-size: 72px;
+      margin-bottom: 16px;
+    }
+
+    .metric-card p {
+      font-size: 18px;
+      color: var(--muted-2);
+    }
+
+    .list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .list li {
+      font-size: 20px;
+      line-height: 1.5;
+      color: var(--muted);
+      padding: 14px 0;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+    }
+
+    .list li:last-child { border-bottom: none; }
+
+    .list li::before {
+      content: '›';
+      color: var(--primary);
+      font-weight: 700;
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .diagram {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .diagram-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 28px;
+    }
+
+    .diagram-box {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px 28px;
+      text-align: center;
+      flex: 1;
+    }
+
+    .diagram-box strong {
+      display: block;
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 20px;
+      color: var(--white);
+      margin-bottom: 6px;
+    }
+
+    .diagram-box span {
+      font-size: 15px;
+      color: var(--muted-2);
+    }
+
+    .arrow {
+      color: var(--primary);
+      font-size: 28px;
+      font-weight: 700;
+    }
+
+    .highlight-bar {
+      width: 80px;
+      height: 4px;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      border-radius: 2px;
+      margin-bottom: 24px;
+    }
+
+    .quote {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 32px;
+      font-weight: 500;
+      line-height: 1.35;
+      color: var(--white);
+      border-left: 4px solid var(--primary);
+      padding-left: 32px;
+      margin: 32px 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    .table-wrap {
+      overflow: hidden;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      position: relative;
+      z-index: 1;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 18px;
+    }
+
+    th {
+      background: var(--panel-2);
+      color: var(--white);
+      font-weight: 600;
+      text-align: left;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .footer {
+      margin-top: auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+      font-size: 14px;
+      color: var(--muted-2);
+      position: relative;
+      z-index: 1;
+    }
+
+    .pill {
+      display: inline-block;
+      background: var(--primary-dim);
+      color: var(--primary);
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 14px;
+    }
+
+    .danger { color: var(--danger); }
+    .success { color: var(--success); }
+    .warning { color: var(--warning); }
+
+    .use-of-funds {
+      display: flex;
+      gap: 48px;
+      align-items: center;
+      flex: 1;
+      position: relative;
+      z-index: 1;
+    }
+
+    .fund-chart {
+      width: 360px;
+      height: 360px;
+      border-radius: 50%;
+      background: conic-gradient(
+        var(--primary) 0deg 144deg,
+        var(--accent) 144deg 270deg,
+        var(--secondary) 270deg 324deg,
+        var(--muted-2) 324deg 360deg
+      );
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .fund-chart::after {
+      content: '';
+      position: absolute;
+      inset: 48px;
+      background: var(--bg);
+      border-radius: 50%;
+    }
+
+    .fund-legend {
+      flex: 1;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .legend-dot {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+
+    .legend-text {
+      flex: 1;
+    }
+
+    .legend-text strong {
+      display: block;
+      font-size: 22px;
+      color: var(--white);
+      margin-bottom: 4px;
+    }
+
+    .legend-text span {
+      font-size: 16px;
+      color: var(--muted);
+    }
+
+    .roadmap {
+      display: flex;
+      gap: 32px;
+      flex: 1;
+      position: relative;
+      z-index: 1;
+    }
+
+    .roadmap-phase {
+      flex: 1;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 32px;
+      position: relative;
+    }
+
+    .roadmap-phase::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 32px;
+      right: 32px;
+      height: 4px;
+      background: var(--primary);
+      border-radius: 0 0 4px 4px;
+    }
+
+    .roadmap-phase h3 {
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+
+    .roadmap-phase .phase-date {
+      font-size: 14px;
+      color: var(--primary);
+      font-weight: 600;
+      margin-bottom: 20px;
+      display: block;
+    }
+
+    .roadmap-phase ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .roadmap-phase li {
+      font-size: 17px;
+      color: var(--muted);
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .roadmap-phase li:last-child { border-bottom: none; }
+
+    .closing-cta {
+      margin-top: 48px;
+      display: flex;
+      gap: 32px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .cta-card {
+      flex: 1;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 32px;
+    }
+
+    .cta-card h3 {
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+
+    .cta-card p {
+      font-size: 17px;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Slide 1: Cover -->
+  <section class="slide slide-cover">
+    <div class="brand-row">
+      <div class="brand-logo">F</div>
+      <div class="brand-name">Fluidic</div>
+    </div>
+    <h1>Continuous-wave<br><span class="gradient">state synthesis</span></h1>
+    <div class="tagline">A blockless execution layer that replaces blocks with a continuously synthesized wave-field.</div>
+    <div class="deck-meta">
+      <div class="meta-item">
+        <div class="meta-label">Raising</div>
+        <div class="meta-value">$1.5M Seed</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Valuation Cap</div>
+        <div class="meta-value">$17M</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Stage</div>
+        <div class="meta-value">Testnet Live</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 2: The Problem -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">The Problem</div>
+        <h2>Blockchains are batch processors trapped in a leader-driven design.</h2>
+      </div>
+      <div class="slide-number">02 / 14</div>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="icon">01</div>
+        <h3>Unpredictable finality</h3>
+        <p>Users wait 12 seconds on Ethereum, multiple confirmations on L1s, or rely on centralized sequencers on L2s. Settlement is never truly continuous.</p>
+      </div>
+      <div class="card">
+        <div class="icon">02</div>
+        <h3>MEV and front-running</div>
+        <p>Mempools create a public auction for ordering. Searchers extract billions in value from ordinary users through sandwich attacks and frontrunning.</p>
+      </div>
+      <div class="card">
+        <div class="icon">03</div>
+        <h3>Congestion pricing</div>
+        <p>When demand spikes, fees spike. Applications become unusable for retail users, and throughput collapses under load.</p>
+      </div>
+      <div class="card">
+        <div class="icon">04</div>
+        <h3>Execution fragmentation</div>
+        <p>Separate chains, rollups, and app-chains fragment liquidity and state. Cross-chain messaging adds latency, cost, and trust assumptions.</p>
+      </div>
+    </div>
+    <div class="quote" style="margin-top: 44px;">
+      The next generation of finance, AI agents, and real-time games needs state that advances every tick — not every block.
+    </div>
+  </section>
+
+  <!-- Slide 3: The Solution -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">The Solution</div>
+        <h2>Fluidic replaces blocks with continuous state synthesis.</h2>
+      </div>
+      <div class="slide-number">03 / 14</div>
+    </div>
+    <div class="grid-2" style="align-items: stretch;">
+      <div style="display: flex; flex-direction: column; gap: 28px;">
+        <p style="font-size: 24px; color: var(--white);">Fluidic is a blockless Layer-1 that ingests signed state transitions called <strong>shifts</strong>, orders them causally, and synthesizes global state in periodic ticks.</p>
+        <ul class="list">
+          <li><strong>No blocks.</strong> State advances continuously through synthesis ticks.</li>
+          <li><strong>No mempool auction.</strong> Shifts are gossiped and causally ordered, not front-run.</li>
+          <li><strong>Parallel by default.</strong> Commutative shifts merge in NTT windows; stateful shifts merge through a vector-clock DAG.</li>
+          <li><strong>Permissionless.</strong> Anyone can run a synthesis node and earn rewards.</li>
+          <li><strong>EVM-compatible.</strong> Raw Ethereum transactions execute inside a revm sandbox.</li>
+        </ul>
+      </div>
+      <div class="diagram" style="display: flex; flex-direction: column; justify-content: center;">
+        <div class="diagram-row">
+          <div class="diagram-box">
+            <strong>Shifts</strong>
+            <span>Signed state transitions</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="diagram-box">
+            <strong>Order</strong>
+            <span>NTT + vector-clock DAG</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="diagram-box">
+            <strong>Synthesize</strong>
+            <span>Wave-field update</span>
+          </div>
+          <div class="arrow">→</div>
+          <div class="diagram-box">
+            <strong>Certify</strong>
+            <span>BFT certificate</span>
+          </div>
+        </div>
+        <div style="text-align: center; margin-top: 32px;">
+          <div style="font-family: 'Space Grotesk'; font-size: 28px; color: var(--primary); margin-bottom: 12px;">&lt;1s finality, every tick</div>
+          <p style="margin: 0;">Each tick produces a signed Synthesis Certificate with Merkle roots of commutative state, stateful DAG, balances, stake, rewards, and EVM transactions.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 4: How It Works -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">Product Mechanics</div>
+        <h2>Shifts, domains, and the wave-field.</h2>
+      </div>
+      <div class="slide-number">04 / 14</div>
+    </div>
+    <div class="grid-3">
+      <div class="card card-highlight">
+        <div class="icon">S</div>
+        <h3>Stateful Shifts</h3>
+        <p>Account-to-account transfers, swaps, and EVM calls. Each carries a vector clock and predecessor hashes, forming a causal DAG. Ordered topologically and finalized after K ticks.</p>
+      </div>
+      <div class="card card-highlight">
+        <div class="icon">C</div>
+        <h3>Commutative Shifts</div>
+        <p>Pool deltas, order-book net flows, and aggregated oracle updates. Order-independent by design; batched through Number-Theoretic Transform (NTT) folding for massive parallelism.</p>
+      </div>
+      <div class="card card-highlight">
+        <div class="icon">D</div>
+        <h3>Concurrency Domains</div>
+        <p>Each domain is an isolated state snapshot with its own accounts, pools, NTT spectrum, and decay policy. Domains can be causal, strict, or commutative — registered permissionlessly.</p>
+      </div>
+    </div>
+    <div class="diagram" style="margin-top: 44px;">
+      <div class="diagram-row" style="justify-content: center; gap: 40px;">
+        <div class="diagram-box" style="max-width: 260px;">
+          <strong>Incoming Shifts</strong>
+          <span>Stateful + Commutative</span>
+        </div>
+        <div class="arrow">→</div>
+        <div class="diagram-box" style="max-width: 260px;">
+          <strong>Domain Router</strong>
+          <span>Per-domain policy</span>
+        </div>
+        <div class="arrow">→</div>
+        <div class="diagram-box" style="max-width: 260px;">
+          <strong>Wave-Field Update</strong>
+          <span>Accounts + Pools + Spectrum</span>
+        </div>
+        <div class="arrow">→</div>
+        <div class="diagram-box" style="max-width: 260px;">
+          <strong>Synthesis Certificate</strong>
+          <span>Signed by operators</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 5: Architecture -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">Architecture</div>
+        <h2>Three execution paths. One unified state.</h2>
+      </div>
+      <div class="slide-number">05 / 14</div>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <div class="highlight-bar"></div>
+        <h3>1. Commutative Path</h3>
+        <p style="margin-bottom: 20px;">Order-independent deltas are accumulated and verified via NTT round-trip. Perfect for AMM pool updates, order-book net flows, and high-frequency telemetry.</p>
+        <ul class="list">
+          <li>100K+ NTT ops/sec</li>
+          <li>No causal ordering overhead</li>
+          <li>Deterministic batch verification</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="highlight-bar" style="background: linear-gradient(90deg, var(--accent), var(--secondary));"></div>
+        <h3>2. Stateful Path</h3>
+        <p style="margin-bottom: 20px;">State-dependent operations are ordered by vector-clock happened-before relationships. Double-spends and causal cycles are rejected with signed proofs.</p>
+        <ul class="list">
+          <li>Vector-clock DAG</li>
+          <li>Topological application</li>
+          <li>Verifiable rejection proofs</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="highlight-bar" style="background: linear-gradient(90deg, var(--secondary), var(--muted-2));"></div>
+        <h3>3. EVM Path</h3>
+        <p style="margin-bottom: 20px;">Raw signed Ethereum transactions execute in a revm sandbox. EVM state is synthesized alongside native shifts, giving Solidity developers a drop-in runtime.</p>
+        <ul class="list">
+          <li>revm execution engine</li>
+          <li>Compatible with existing wallets</li>
+          <li>Merged into synthesis certificates</li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer">
+      <span>Rust implementation | Ed25519 signatures | DashMap wave-field | Merkle roots per tick</span>
+      <span>Fluidic Foundation</span>
+    </div>
+  </section>
+
+  <!-- Slide 6: Consensus -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">Consensus</div>
+        <h2>Stake-weighted BFT certificates, not leader election.</h2>
+      </div>
+      <div class="slide-number">06 / 14</div>
+    </div>
+    <div class="grid-2" style="align-items: stretch;">
+      <div class="card card-highlight" style="justify-content: center;">
+        <h3>How finality works</h3>
+        <ol class="list" style="list-style: none; padding: 0;">
+          <li><strong>1. Operators synthesize.</strong> Each tick, staked operators run the same deterministic synthesis and compute Merkle roots.</li>
+          <li><strong>2. Certificates are signed.</strong> Operators broadcast signed Synthesis Certificates containing the roots.</li>
+          <li><strong>3. Quorum is reached.</strong> A tick is finalized when <strong>2/3 + 1</strong> of stake-weighted operators have signed matching roots.</li>
+          <li><strong>4. Equivocation is slashed.</strong> Conflicting certificates for the same tick trigger slashing and burn the offender's stake.</li>
+        </ol>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 28px;">
+        <div class="card metric-card">
+          <div class="big-stat">2/3+1</div>
+          <p>Stake-weighted quorum for BFT finality</p>
+        </div>
+        <div class="card metric-card">
+          <div class="big-stat">&lt;1s</div>
+          <p>Default synthesis interval, configurable per domain</p>
+        </div>
+        <div class="card metric-card">
+          <div class="big-stat">∞</div>
+          <p>Permissionless operators; no whitelisted sequencer set</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 7: Tokenomics -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">Tokenomics</div>
+        <h2>WAVE: native fuel, stake, and burn-reward loop.</h2>
+      </div>
+      <div class="slide-number">07 / 14</div>
+    </div>
+    <div class="grid-2" style="align-items: stretch;">
+      <div class="card card-highlight">
+        <h3>Metabolic burn engine</h3>
+        <p>Every synthesis tick applies continuous exponential decay to idle WAVE balances. The decayed value is split:</p>
+        <div style="display: flex; gap: 24px; margin: 28px 0;">
+          <div style="flex: 1; background: var(--panel-2); border-radius: 16px; padding: 24px; text-align: center;">
+            <div style="font-family: 'Space Grotesk'; font-size: 48px; font-weight: 700; color: var(--danger);">25%</div>
+            <div style="font-size: 16px; color: var(--muted); margin-top: 8px;">Permanently burned</div>
+          </div>
+          <div style="flex: 1; background: var(--panel-2); border-radius: 16px; padding: 24px; text-align: center;">
+            <div style="font-family: 'Space Grotesk'; font-size: 48px; font-weight: 700; color: var(--success);">75%</div>
+            <div style="font-size: 16px; color: var(--muted); margin-top: 8px;">Rewards to stakers + LPs</div>
+          </div>
+        </div>
+        <p style="font-size: 17px;">Activity grace windows protect active accounts, aligning network usage with economic participation.</p>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+        <div class="card">
+          <h3>Supply design</h3>
+          <ul class="list">
+            <li>Fixed long-term supply cap modeled around 1B WAVE</li>
+            <li>Genesis seeds operators, faucet, and ecosystem pools</li>
+            <li>New issuance only through operator rewards and faucet drips</li>
+            <li>Deflationary sink grows with economic activity</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Stake &amp; rewards</h3>
+          <ul class="list">
+            <li>Minimum stake threshold to sign certificates</li>
+            <li>Rewards distributed proportional to stake every tick</li>
+            <li>Slashing for equivocation and downtime</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 8: Network & Discovery -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">Networking</div>
+        <h2>Seedless, permissionless peer discovery.</h2>
+      </div>
+      <div class="slide-number">08 / 14</div>
+    </div>
+    <p style="font-size: 24px; color: var(--white); margin-bottom: 40px;">Fluidic nodes find each other without hardcoded seed lists. Discovery layers include signed genesis DNS records, the public BitTorrent Mainline DHT, and LAN mDNS.</p>
+    <div class="grid-4">
+      <div class="card">
+        <div class="icon">DNS</div>
+        <h3>Signed Genesis DNS</h3>
+        <p>Bootstrap records served as HTTPS JSON or DNS TXT, signed by genesis keys. Authenticated first contact.</p>
+      </div>
+      <div class="card">
+        <div class="icon">DHT</div>
+        <h3>Mainline DHT</strong></h3>
+        <p>Nodes announce themselves on a network-specific infohash derived from FLUIDIC_NETWORK_ID. Decentralized and censorship-resistant.</p>
+      </div>
+      <div class="card">
+        <div class="icon">mDNS</div>
+        <h3>LAN mDNS</h3>
+        <p>Local mesh discovery over multicast DNS for development, homelab, and private datacenter deployments.</p>
+      </div>
+      <div class="card">
+        <div class="icon">TCP</div>
+        <h3>Gossip Mesh</h3>
+        <p>Authenticated TCP gossip with optional PSK. Shifts, certificates, and peer announcements propagate across the mesh.</p>
+      </div>
+    </div>
+    <div class="diagram" style="margin-top: 44px;">
+      <div class="diagram-row" style="justify-content: center;">
+        <div class="diagram-box" style="max-width: 220px;">
+          <strong>New Node</strong>
+          <span>Boots with OSCILLATOR_ID</span>
+        </div>
+        <div class="arrow">→</div>
+        <div class="diagram-box" style="max-width: 220px;">
+          <strong>DNS / DHT / mDNS</strong>
+          <span>Discover peers</span>
+        </div>
+        <div class="arrow">→</div>
+        <div class="diagram-box" style="max-width: 220px;">
+          <strong>State Sync</strong>
+          <span>Download snapshot</span>
+        </div>
+        <div class="arrow">→</div>
+        <div class="diagram-box" style="max-width: 220px;">
+          <strong>Join Mesh</strong>
+          <span>Synthesize &amp; certify</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 9: Product Stack -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">Product Stack</div>
+        <h2>Everything needed to run, build, and use the network.</h2>
+      </div>
+      <div class="slide-number">09 / 14</div>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <div class="icon">N</div>
+        <h3>Fluidic Node</h3>
+        <p>Rust runtime packaged as a single Docker image. Runs as a light client by default; becomes a full operator when a PUBLIC_ENDPOINT is advertised. Includes persistence, API, and gossip.</p>
+      </div>
+      <div class="card">
+        <div class="icon">S</div>
+        <h3>TypeScript SDK</h3>
+        <p>Generate keys, register accounts, sign stateful and commutative shifts, query balances, and subscribe to WebSocket feeds. Drop-in client for wallets and dApps.</p>
+      </div>
+      <div class="card">
+        <div class="icon">D</div>
+        <h3>Reference dApp</h3>
+        <p>Live example at app.testnet.fluidic.foundation: wallet creation, faucet, swaps, and transaction history. Open-source and forkable.</p>
+      </div>
+    </div>
+    <div class="grid-3" style="margin-top: 36px;">
+      <div class="card">
+        <div class="icon">E</div>
+        <h3>Explorer</h3>
+        <p>Blockless explorer showing shifts, ticks, certificates, validators, and quorum status. Integrated into the landing page.</p>
+      </div>
+      <div class="card">
+        <div class="icon">F</div>
+        <h3>Testnet Faucet</h3>
+        <p>Distributes WAVE and USDC test tokens to registered accounts. Containerized and deployed alongside the testnet mesh.</p>
+      </div>
+      <div class="card">
+        <div class="icon">B</div>
+        <h3>EVM Bridge Sandbox</h3>
+        <p>Execute raw Ethereum transactions inside the synthesis loop. Supports existing wallets and Solidity contracts without rewrites.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 10: Traction -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">Traction</div>
+        <h2>Testnet is live. Code is shipping.</h2>
+      </div>
+      <div class="slide-number">10 / 14</div>
+    </div>
+    <div class="grid-4">
+      <div class="card metric-card">
+        <div class="big-stat">Live</div>
+        <p>Testnet mesh running on Railway with public API endpoints</p>
+      </div>
+      <div class="card metric-card">
+        <div class="big-stat">81+</div>
+        <p>Unit and integration tests passing in CI</p>
+      </div>
+      <div class="card metric-card">
+        <div class="big-stat">100K+</div>
+        <p>Commutative NTT ops/sec in benchmarks</p>
+      </div>
+      <div class="card metric-card">
+        <div class="big-stat">&lt;1s</div>
+        <p>Synthesis-tick finality on public testnet</p>
+      </div>
+    </div>
+    <div class="table-wrap" style="margin-top: 44px;">
+      <table>
+        <thead>
+          <tr>
+            <th>Milestone</th>
+            <th>Status</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Core runtime</td>
+            <td><span class="success">✓ Shipped</span></td>
+            <td>Wave-field, NTT engine, vector-clock DAG, metabolic decay, EVM sandbox</td>
+          </tr>
+          <tr>
+            <td>Networking</td>
+            <td><span class="success">✓ Shipped</span></td>
+            <td>TCP gossip, Mainline DHT, mDNS, signed DNS/HTTPS bootstrap records</td>
+          </tr>
+          <tr>
+            <td>Consensus</td>
+            <td><span class="success">✓ Shipped</span></td>
+            <td>Stake table, BFT quorum certificates, slashing, light client</td>
+          </tr>
+          <tr>
+            <td>Developer stack</td>
+            <td><span class="success">✓ Shipped</span></td>
+            <td>REST + WebSocket API, TypeScript SDK, reference dApp, explorer, docs</td>
+          </tr>
+          <tr>
+            <td>Public testnet</td>
+            <td><span class="success">✓ Live</span></td>
+            <td>api.testnet.fluidic.foundation + Railway-orchestrated services</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Slide 11: Market -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">Market</div>
+        <h2>Built for the applications that break blockchains.</h2>
+      </div>
+      <div class="slide-number">11 / 14</div>
+    </div>
+    <div class="grid-4">
+      <div class="card">
+        <div class="icon">D</div>
+        <h3>DeFi</h3>
+        <p>CLOBs and AMMs on one engine. MEV-resistant causal ordering. Cross-domain composability without bridge latency.</p>
+      </div>
+      <div class="card">
+        <div class="icon">A</div>
+        <h3>AI Agents</h3>
+        <p>Per-agent state domains. Verifiable action logs. Pay-per-signal economics. Agents can transact at machine speed without fee spikes.</p>
+      </div>
+      <div class="card">
+        <div class="icon">G</div>
+        <h3>Gaming</h3>
+        <p>Tick-synchronized game state. High-frequency player actions. Asset ownership without block congestion.</p>
+      </div>
+      <div class="card">
+        <div class="icon">I</div>
+        <h3>Institutions</h3>
+        <p>Auditable Merkle certificates. Private compliance domains with strict ordering. Deterministic settlement windows.</p>
+      </div>
+    </div>
+    <div class="quote" style="margin-top: 48px;">
+      The total addressable market is the intersection of high-frequency decentralized finance, autonomous agent economies, and real-time on-chain applications — all of which need sub-second, fair-ordered, parallelizable state.
+    </div>
+  </section>
+
+  <!-- Slide 12: Roadmap -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">Roadmap</div>
+        <h2>From testnet to production mesh.</h2>
+      </div>
+      <div class="slide-number">12 / 14</div>
+    </div>
+    <div class="roadmap">
+      <div class="roadmap-phase">
+        <span class="phase-date">Now — Q2 2026</span>
+        <h3>Testnet Hardening</h3>
+        <ul>
+          <li>Public testnet stability</li>
+          <li>SDK + dApp developer onboarding</li>
+          <li>Security audits (runtime, consensus, economics)</li>
+          <li>Seedless discovery at scale</li>
+          <li>Bug bounty program</li>
+        </ul>
+      </div>
+      <div class="roadmap-phase">
+        <span class="phase-date">Q3 — Q4 2026</span>
+        <h3>Mainnet Readiness</h3>
+        <ul>
+          <li>Incentivized testnet with real rewards</li>
+          <li>Bridge adapters for Ethereum, Solana, Bitcoin</li>
+          <li>Domain marketplace and policy tooling</li>
+          <li>Validator set expansion</li>
+          <li>Mainnet genesis design finalization</li>
+        </ul>
+      </div>
+      <div class="roadmap-phase">
+        <span class="phase-date">2027+</span>
+        <h3>Production Mesh</h3>
+        <ul>
+          <li>Mainnet launch with WAVE genesis</li>
+          <li>Institutional compliance domains</li>
+          <li>AI-agent runtime partnerships</li>
+          <li>Cross-chain liquidity hubs</li>
+          <li>Decentralized governance upgrade path</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 13: The Ask -->
+  <section class="slide">
+    <div class="slide-header">
+      <div class="slide-header-left">
+        <div class="pill">The Ask</div>
+        <h2>$1.5M seed at a $17M valuation cap.</h2>
+      </div>
+      <div class="slide-number">13 / 14</div>
+    </div>
+    <div class="use-of-funds">
+      <div class="fund-chart"></div>
+      <div class="fund-legend">
+        <div class="legend-item">
+          <div class="legend-dot" style="background: var(--primary);"></div>
+          <div class="legend-text">
+            <strong>40% — Engineering &amp; Protocol</strong>
+            <span>Core runtime hardening, consensus audits, performance optimization, and developer tooling.</span>
+          </div>
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background: var(--accent);"></div>
+          <div class="legend-text">
+            <strong>35% — Security &amp; Audits</strong>
+            <span>Third-party audits, formal verification, fuzzing, bug bounties, and testnet attack campaigns.</span>
+          </div>
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background: var(--secondary);"></div>
+          <div class="legend-text">
+            <strong>15% — Ecosystem &amp; BD</strong>
+            <span>Grants, integrations, reference applications, and strategic partnerships.</span>
+          </div>
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background: var(--muted-2);"></div>
+          <div class="legend-text">
+            <strong>10% — Operations</strong>
+            <span>Legal, infrastructure, testnet operations, and administrative runway.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="footer">
+      <span>18-month runway to mainnet readiness</span>
+      <span>Fluidic Foundation</span>
+    </div>
+  </section>
+
+  <!-- Slide 14: Closing -->
+  <section class="slide slide-cover">
+    <div class="brand-row">
+      <div class="brand-logo">F</div>
+      <div class="brand-name">Fluidic</div>
+    </div>
+    <h1 style="font-size: 76px;">Join the blockless
+      <br><span class="gradient">state synthesis mesh.</span>
+    </h1>
+    <div class="tagline" style="max-width: 900px;">
+      We are replacing the block with a wave. If you believe decentralized state should advance continuously, fairly, and in parallel, let's build the next execution layer together.
+    </div>
+    <div class="closing-cta">
+      <div class="cta-card">
+        <h3>Run a node</h3>
+        <p>ghcr.io/fluidic-foundation/fluidic-fvm/mesh-node:latest</p>
+      </div>
+      <div class="cta-card">
+        <h3>Explore the testnet</h3>
+        <p>https://testnet.fluidic.foundation/explorer</p>
+      </div>
+      <div class="cta-card">
+        <h3>Read the source</h3>
+        <p>https://github.com/Fluidic-Foundation/Fluidic-FVM</p>
+      </div>
+    </div>
+    <div class="deck-meta" style="margin-top: 64px;">
+      <div class="meta-item">
+        <div class="meta-label">Raising</div>
+        <div class="meta-value">$1.5M Seed</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Cap</div>
+        <div class="meta-value">$17M</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Contact</div>
+        <div class="meta-value">hello@fluidic.foundation</div>
+      </div>
+    </div>
+  </section>
+
+</body>
+</html>
