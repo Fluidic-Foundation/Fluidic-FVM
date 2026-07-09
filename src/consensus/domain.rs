@@ -18,6 +18,16 @@ pub fn agent_registration_fee_units() -> u128 {
     AGENT_REGISTRATION_FEE_WAVE * crate::field::wave_field::WAVE_PRECISION
 }
 
+/// Intent submission fee in whole-WAVE terms.  This is kept tiny (0.001 WAVE)
+/// so it does not discourage legitimate agentic/intent use, while still making
+/// large-scale intent spam uneconomical.
+pub const INTENT_SUBMISSION_FEE_WAVE_MILLI: u128 = 1;
+
+/// Intent submission fee in sub-units (precision-aware).  1 milli-WAVE.
+pub fn intent_submission_fee_units() -> u128 {
+    INTENT_SUBMISSION_FEE_WAVE_MILLI * crate::field::wave_field::WAVE_PRECISION / 1_000
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatefulOrdering {
     /// Causal, vector-clock DAG ordering (default for state-dependent value).

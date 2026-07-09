@@ -456,16 +456,27 @@ impl Oscillator {
                 intent.deadline_tick, tick
             ));
         }
-        // Ensure the owner can cover the solver reward.
+        // Ensure the owner can cover the solver reward plus the small submission
+        // fee. The fee is burned/redistributed immediately to prevent spam and
+        // pay for matching compute, while keeping agentic use cheap.
+        let fee = crate::consensus::domain::intent_submission_fee_units();
         {
             let field = self.wave_field.lock().unwrap();
             let balance = field.account_balance_in_domain(intent.domain, intent.owner).units;
-            if balance < intent.solver_reward {
+            let required = intent.solver_reward.saturating_add(fee);
+            if balance < required {
                 return Err(format!(
-                    "intent rejected: insufficient balance for solver reward (need {}, have {})",
-                    intent.solver_reward, balance
+                    "intent rejected: insufficient balance for solver reward + fee (need {}, have {})",
+                    required, balance
                 ));
             }
+            if !field.debit_account_in_domain(intent.domain, intent.owner, fee) {
+                return Err("intent rejected: failed to debit submission fee".to_string());
+            }
+        }
+        {
+            let reward_pool = self.reward_pool.read().unwrap();
+            reward_pool.distribute_fees(fee, &self.stake_table);
         }
         self.pending_intents.lock().unwrap().push(intent);
         Ok(())

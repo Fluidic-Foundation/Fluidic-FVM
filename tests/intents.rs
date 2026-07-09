@@ -102,6 +102,16 @@ fn intent_transfer_is_matched_and_settled() {
 
     osc.ingest(Signal::Intent(intent.clone()), &keys).unwrap();
 
+    let field = osc.wave_field.lock().unwrap();
+    let fee = fluidic::consensus::domain::intent_submission_fee_units();
+    let expected_owner_after_fee = 1_000_000_000_000_000u128 - fee;
+    assert_eq!(
+        field.account_balance(owner.account_id()).units,
+        expected_owner_after_fee,
+        "owner should be charged the intent submission fee"
+    );
+    drop(field);
+
     let fill = IntentFillShift::new(
         &solver,
         intent.intent_id,
@@ -163,6 +173,36 @@ fn intent_fill_below_min_amount_is_rejected() {
     let result = osc.synthesize(&keys);
 
     assert_eq!(result.intents_matched, 0);
+}
+
+#[test]
+fn intent_submission_rejected_without_fee() {
+    let osc = Oscillator::new([1u8; 32], 16);
+    let owner = KeyPair::generate();
+    let beneficiary = KeyPair::generate();
+
+    // Seed just enough to cover the solver reward but not the submission fee.
+    osc.seed_account(owner.account_id(), 1_000_000_000);
+
+    let keys = registry(&[owner.clone(), beneficiary.clone()]);
+
+    let intent = IntentShift::new(
+        &owner,
+        DEFAULT_DEX_DOMAIN,
+        10,
+        IntentConstraint::Transfer {
+            to: beneficiary.account_id(),
+            min_amount: 100_000_000_000,
+        },
+        1_000_000_000, // 0.001 WAVE solver reward
+        1,
+        0,
+    );
+
+    assert!(
+        osc.ingest(Signal::Intent(intent), &keys).is_err(),
+        "intent should be rejected when owner cannot pay submission fee"
+    );
 }
 
 #[test]
