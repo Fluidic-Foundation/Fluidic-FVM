@@ -1,8 +1,11 @@
+pub mod encrypted;
 pub mod keys;
 pub mod phase_shift;
 
+pub use encrypted::{EncryptedSignal, decrypt_signal, encrypt_signal};
 pub use keys::{AccountId, KeyPair, WaveAddress};
 pub use phase_shift::{
-    CommutativeShift, DomainId, OscillatorId, PoolId, RegistrationShift, Signal, StakeShift,
-    StatefulShift, TxHash, VectorClock, DEFAULT_DEX_DOMAIN,
+    AgentRegistrationShift, CommutativeShift, DomainId, IntentConstraint, IntentFillShift,
+    IntentShift, OscillatorId, PoolId, RegistrationShift, Signal, StakeShift, StatefulShift, TxHash,
+    VectorClock, DEFAULT_DEX_DOMAIN,
 };

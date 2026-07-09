@@ -2,7 +2,7 @@ use fluidic::api::state::{ApiState, RecentShift};
 use fluidic::api::start_api_server;
 use fluidic::consensus::Oscillator;
 use fluidic::crypto::keys::KeyPair;
-use fluidic::crypto::{CommutativeShift, Signal, StakeShift, DEFAULT_DEX_DOMAIN};
+use fluidic::crypto::{decrypt_signal, CommutativeShift, Signal, StakeShift, DEFAULT_DEX_DOMAIN};
 use fluidic::field::coordinates::Coordinate;
 use fluidic::light_client::LightClient;
 use fluidic::network::{
@@ -287,7 +287,7 @@ async fn main() {
     };
 
     let synth_interval_ms: u64 = std::env::var("SYNTHESIS_INTERVAL_MS")
-        .unwrap_or_else(|_| "1000".to_string())
+        .unwrap_or_else(|_| "100".to_string())
         .parse()
         .expect("SYNTHESIS_INTERVAL_MS must be a number");
 
@@ -691,9 +691,14 @@ async fn main() {
         (_, Some(w)) => w.inbound,
         _ => unreachable!(),
     };
+    let psk_ingest = psk.map(|a| a.to_vec());
     tokio::spawn(async move {
         while let Some(shift) = inbound.recv().await {
-            match shift {
+            // Decrypted signals (including nested decrypts) are processed through
+            // the same queue so key registration and ingestion happen uniformly.
+            let mut queue = vec![shift];
+            while let Some(shift) = queue.pop() {
+                match shift {
                 Signal::Registration(reg) => {
                     let vk = match ed25519_dalek::VerifyingKey::from_bytes(&reg.public_key) {
                         Ok(vk) => vk,
@@ -771,6 +776,28 @@ async fn main() {
                 Signal::PeerAnnounce(anns) => {
                     api_state_ingest.peer_directory.insert_announcements(&anns, None);
                 }
+                Signal::AgentRegistration(reg) => {
+                    if let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&reg.public_key) {
+                        api_state_ingest.register_key(reg.agent, vk);
+                    }
+                    if !client_mode {
+                        let registry = api_state_ingest.key_registry();
+                        if !osc_ingest.apply_agent_registration(&reg, &registry) {
+                            warn!("rejected invalid agent registration gossip from {}", reg.owner);
+                        }
+                    }
+                }
+                Signal::Encrypted(enc) => {
+                    match psk_ingest {
+                        Some(ref psk) => match decrypt_signal(psk, &enc) {
+                            Ok(inner) => queue.push(inner),
+                            Err(e) => warn!("failed to decrypt encrypted signal: {}", e),
+                        },
+                        None => {
+                            warn!("encrypted signal received but FLUIDIC_PSK is not set");
+                        }
+                    }
+                }
                 Signal::Auth { .. } => {
                     // Authentication is handled at the gossip layer; once a
                     // Signal reaches the ingest loop the peer is trusted.
@@ -782,6 +809,7 @@ async fn main() {
                             warn!("ingest error: {}", e);
                         }
                     }
+                }
                 }
             }
         }

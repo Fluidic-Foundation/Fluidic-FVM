@@ -361,6 +361,10 @@ fn signal_name(signal: &Signal) -> &'static str {
         Signal::Certificate(_) => "Certificate",
         Signal::Auth { .. } => "Auth",
         Signal::PeerAnnounce(_) => "PeerAnnounce",
+        Signal::AgentRegistration(_) => "AgentRegistration",
+        Signal::Intent(_) => "Intent",
+        Signal::IntentFill(_) => "IntentFill",
+        Signal::Encrypted(_) => "Encrypted",
     }
 }
 

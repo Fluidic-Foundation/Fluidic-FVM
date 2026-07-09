@@ -263,3 +263,79 @@ async fn ten_thousand_overlapping_phase_shifts() {
     );
     println!("=========================================\n");
 }
+
+#[tokio::test]
+async fn sub_100ms_finality() {
+    use fluidic::consensus::Oscillator;
+    use fluidic::crypto::keys::KeyPair;
+    use fluidic::crypto::{AccountId, CommutativeShift, Signal, StatefulShift, VectorClock, DEFAULT_DEX_DOMAIN};
+    use fluidic::field::coordinates::Coordinate;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    const NTT_SIZE: usize = 256;
+    const ACCOUNTS: usize = 10;
+    const STATEFUL_PER_TICK: usize = 5;
+    const COMMUTATIVE_PER_TICK: usize = 5;
+    const TICKS: usize = 5;
+
+    let osc = Arc::new(Oscillator::new([1u8; 32], NTT_SIZE));
+    let keypairs: Vec<KeyPair> = (0..ACCOUNTS).map(|_| KeyPair::generate()).collect();
+    let registry: HashMap<AccountId, ed25519_dalek::VerifyingKey> =
+        keypairs.iter().map(|kp| (kp.account_id(), kp.public_key())).collect();
+
+    for kp in &keypairs {
+        osc.seed_account(kp.account_id(), 1_000_000_000_000_000);
+    }
+
+    let mut nonce = 1u64;
+    for _ in 0..TICKS {
+        for i in 0..COMMUTATIVE_PER_TICK {
+            let kp = &keypairs[i % ACCOUNTS];
+            let shift = CommutativeShift::new(
+                kp,
+                DEFAULT_DEX_DOMAIN,
+                Coordinate::from_scalar(i as u64),
+                1_000_000,
+                [1u8; 32],
+                nonce,
+                0,
+            );
+            nonce += 1;
+            osc.ingest(Signal::Commutative(shift), &registry).unwrap();
+        }
+        for i in 0..STATEFUL_PER_TICK {
+            let from = &keypairs[i % ACCOUNTS];
+            let to = keypairs[(i + 1) % ACCOUNTS].account_id();
+            let mut vc = VectorClock::new();
+            vc.tick([1u8; 32]);
+            let shift = StatefulShift::new(
+                from,
+                DEFAULT_DEX_DOMAIN,
+                to,
+                1_000_000_000,
+                vc,
+                vec![],
+                nonce,
+                0,
+            );
+            nonce += 1;
+            osc.ingest(Signal::Stateful(shift), &registry).unwrap();
+        }
+
+        let start = Instant::now();
+        let result = osc.synthesize(&registry);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "synthesis took {:?}, exceeding 100 ms target (applied comm={} stateful={})",
+            elapsed,
+            result.commutative_applied,
+            result.stateful_applied
+        );
+    }
+
+    println!("sub-100ms finality: {} ticks passed", TICKS);
+}

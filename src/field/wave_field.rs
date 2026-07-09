@@ -3,6 +3,7 @@ use crate::crypto::{AccountId, DEFAULT_DEX_DOMAIN, DomainId, PoolId};
 use crate::field::coordinates::{Coordinate, FrequencyVector};
 use crate::value::metabolic::{DEFAULT_DEX_LAMBDA_PPM, decayed_balance};
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 /// Native token precision: 10^12 sub-units per WAVE.
@@ -67,10 +68,32 @@ impl Balance {
     }
 }
 
+/// Classification of an account in the wave-field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccountType {
+    /// A normal user-controlled account.
+    User,
+    /// An autonomous agent account authorized by an owner.
+    Agent {
+        owner: AccountId,
+        /// Synthesis tick at which the agent delegation expires (0 = never).
+        expiry_tick: u64,
+    },
+}
+
+impl Default for AccountType {
+    fn default() -> Self {
+        AccountType::User
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AccountState {
     pub balance: Balance,
     pub frequency_vector: FrequencyVector,
+    pub account_type: AccountType,
+    /// Simple reputation score: successful actions increment, rejections decrement.
+    pub reputation: i64,
 }
 
 /// Partitioned state for one concurrency domain inside the global wave-field.
@@ -184,7 +207,33 @@ impl WaveField {
         false
     }
 
-    pub fn account_balance_in_domain(&self, domain: DomainId, id: AccountId) -> Balance {
+    pub fn set_account_type_in_domain(&self, domain: DomainId, id: AccountId, account_type: AccountType) {
+        self.ensure_account_in_domain(domain, id);
+        if let Some(state) = self.domains.get(&domain) {
+            if let Some(mut account) = state.accounts.get_mut(&id) {
+                account.account_type = account_type;
+            }
+        }
+    }
+
+    pub fn account_type_in_domain(&self, domain: DomainId, id: AccountId) -> AccountType {
+        self.domains
+            .get(&domain)
+            .and_then(|s| s.accounts.get(&id).map(|a| a.account_type))
+            .unwrap_or(AccountType::User)
+    }
+
+    pub fn adjust_reputation_in_domain(&self, domain: DomainId, id: AccountId, delta: i64) {
+        self.ensure_account_in_domain(domain, id);
+        if let Some(state) = self.domains.get(&domain) {
+            if let Some(mut account) = state.accounts.get_mut(&id) {
+                account.reputation = account.reputation.saturating_add(delta);
+            }
+        }
+    }
+
+    pub fn account_balance_in_domain(&self, domain: DomainId, id: AccountId,
+    ) -> Balance {
         self.domains
             .get(&domain)
             .and_then(|s| s.accounts.get(&id).map(|a| a.balance))
@@ -368,6 +417,18 @@ impl WaveField {
 
     pub fn debit_account(&self, id: AccountId, amount: u128) -> bool {
         self.debit_account_in_domain(DEFAULT_DEX_DOMAIN, id, amount)
+    }
+
+    pub fn set_account_type(&self, id: AccountId, account_type: AccountType) {
+        self.set_account_type_in_domain(DEFAULT_DEX_DOMAIN, id, account_type);
+    }
+
+    pub fn account_type(&self, id: AccountId) -> AccountType {
+        self.account_type_in_domain(DEFAULT_DEX_DOMAIN, id)
+    }
+
+    pub fn adjust_reputation(&self, id: AccountId, delta: i64) {
+        self.adjust_reputation_in_domain(DEFAULT_DEX_DOMAIN, id, delta);
     }
 
     pub fn account_balance(&self, id: AccountId) -> Balance {

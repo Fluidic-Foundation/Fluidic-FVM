@@ -7,7 +7,7 @@
 use crate::consensus::certificate::SynthesisCertificate;
 use crate::consensus::Oscillator;
 use crate::crypto::{AccountId, DEFAULT_DEX_DOMAIN};
-use crate::field::wave_field::{AccountState, Balance};
+use crate::field::wave_field::{AccountState, AccountType, Balance};
 use crate::operator::stake::OperatorEntry;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -111,6 +111,8 @@ pub fn apply_sync_state(
                     AccountState {
                         balance,
                         frequency_vector: Default::default(),
+                        account_type: AccountType::default(),
+                        reputation: 0,
                     },
                 );
             }

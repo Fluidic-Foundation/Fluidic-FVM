@@ -1,6 +1,7 @@
 use crate::consensus::{Oscillator, ShiftStatus, SynthesisResult};
 use crate::crypto::{
-    AccountId, KeyPair, RegistrationShift, Signal, StakeShift, StatefulShift, VectorClock,
+    AccountId, AgentRegistrationShift, IntentFillShift, IntentShift, KeyPair, RegistrationShift,
+    Signal, StakeShift, StatefulShift, VectorClock,
 };
 use crate::network::PeerDirectory;
 use ed25519_dalek::VerifyingKey;
@@ -33,6 +34,7 @@ pub struct StateSnapshot {
     pub commutative_applied: usize,
     pub stateful_applied: usize,
     pub evm_applied: usize,
+    pub intents_matched: usize,
     pub accounts: HashMap<String, u128>,
 }
 
@@ -41,6 +43,7 @@ pub struct SynthesisStats {
     pub commutative_applied: usize,
     pub stateful_applied: usize,
     pub evm_applied: usize,
+    pub intents_matched: usize,
     pub avg_latency_ms: f64,
     pub throughput_per_sec: f64,
     pub network_ms: f64,
@@ -150,6 +153,42 @@ impl ApiState {
         }
     }
 
+    pub fn broadcast_agent_registration(&self, reg: AgentRegistrationShift) {
+        if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
+            let sender = sender.clone();
+            let signal = Signal::AgentRegistration(reg);
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(signal).await {
+                    tracing::warn!("failed to broadcast agent registration: {}", e);
+                }
+            });
+        }
+    }
+
+    pub fn broadcast_intent(&self, intent: IntentShift) {
+        if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
+            let sender = sender.clone();
+            let signal = Signal::Intent(intent);
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(signal).await {
+                    tracing::warn!("failed to broadcast intent: {}", e);
+                }
+            });
+        }
+    }
+
+    pub fn broadcast_intent_fill(&self, fill: IntentFillShift) {
+        if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
+            let sender = sender.clone();
+            let signal = Signal::IntentFill(fill);
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(signal).await {
+                    tracing::warn!("failed to broadcast intent fill: {}", e);
+                }
+            });
+        }
+    }
+
     pub fn register_key(&self, account: AccountId, key: VerifyingKey) {
         self.registry.write().unwrap().insert(account, key);
     }
@@ -171,6 +210,7 @@ impl ApiState {
         stats.commutative_applied += result.commutative_applied;
         stats.stateful_applied += result.stateful_applied;
         stats.evm_applied += result.evm_applied;
+        stats.intents_matched += result.intents_matched;
         stats.avg_latency_ms = result.avg_latency_ms;
         stats.throughput_per_sec = result.throughput_per_sec;
     }
@@ -257,6 +297,7 @@ impl ApiState {
             commutative_applied: stats.commutative_applied,
             stateful_applied: stats.stateful_applied,
             evm_applied: stats.evm_applied,
+            intents_matched: stats.intents_matched,
             accounts: HashMap::new(),
         }
     }

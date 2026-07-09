@@ -304,6 +304,232 @@ impl StakeShift {
     }
 }
 
+/// Constraints an intent places on its execution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IntentConstraint {
+    /// Transfer at least `min_amount` to `to` before `deadline_tick`.
+    Transfer { to: AccountId, min_amount: u128 },
+    /// Swap `from_token` for `to_token`, receiving at least `min_out`
+    /// while respecting `max_slippage_bp` basis points of slippage.
+    Swap {
+        from_token: AccountId,
+        to_token: AccountId,
+        min_out: u128,
+        max_slippage_bp: u64,
+    },
+}
+
+/// An intent declares a desired outcome and a reward for the solver that
+/// produces a valid fill.  Intents are matched during synthesis, producing
+/// ordinary stateful shifts on behalf of the owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntentShift {
+    pub owner: AccountId,
+    pub intent_id: TxHash,
+    #[serde(default = "default_domain")]
+    pub domain: DomainId,
+    pub deadline_tick: u64,
+    pub constraint: IntentConstraint,
+    pub solver_reward: u128,
+    pub nonce: u64,
+    pub timestamp_ns: u64,
+    pub signature: Vec<u8>,
+}
+
+impl IntentShift {
+    pub fn new(
+        keypair: &KeyPair,
+        domain: DomainId,
+        deadline_tick: u64,
+        constraint: IntentConstraint,
+        solver_reward: u128,
+        nonce: u64,
+        timestamp_ns: u64,
+    ) -> Self {
+        let owner = keypair.account_id();
+        let mut shift = Self {
+            owner,
+            intent_id: [0u8; 32],
+            domain,
+            deadline_tick,
+            constraint,
+            solver_reward,
+            nonce,
+            timestamp_ns,
+            signature: Vec::new(),
+        };
+        shift.intent_id = shift.hash();
+        let sig = keypair.sign(&shift.signing_bytes());
+        shift.signature = sig.to_bytes().to_vec();
+        shift
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(b"FLUIDIC:INTENT:v1");
+        buf.extend_from_slice(self.owner.as_bytes());
+        buf.extend_from_slice(&self.domain);
+        buf.extend_from_slice(&self.deadline_tick.to_le_bytes());
+        match &self.constraint {
+            IntentConstraint::Transfer { to, min_amount } => {
+                buf.push(0);
+                buf.extend_from_slice(to.as_bytes());
+                buf.extend_from_slice(&min_amount.to_le_bytes());
+            }
+            IntentConstraint::Swap {
+                from_token,
+                to_token,
+                min_out,
+                max_slippage_bp,
+            } => {
+                buf.push(1);
+                buf.extend_from_slice(from_token.as_bytes());
+                buf.extend_from_slice(to_token.as_bytes());
+                buf.extend_from_slice(&min_out.to_le_bytes());
+                buf.extend_from_slice(&max_slippage_bp.to_le_bytes());
+            }
+        }
+        buf.extend_from_slice(&self.solver_reward.to_le_bytes());
+        buf.extend_from_slice(&self.nonce.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf
+    }
+
+    pub fn hash(&self) -> TxHash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&self.signing_bytes());
+        hasher.finalize().into()
+    }
+
+    pub fn verify(&self, public_key: &ed25519_dalek::VerifyingKey) -> bool {
+        let Ok(sig) = ed25519_dalek::Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        if !KeyPair::verify(public_key, &self.signing_bytes(), &sig) {
+            return false;
+        }
+        AccountId::from_public_key(public_key) == self.owner
+    }
+}
+
+/// A solver fill for an open intent.  During synthesis the fill is validated
+/// against the intent constraints and, if valid, executed as a stateful shift
+/// from the intent owner to the beneficiary, with the solver rewarded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntentFillShift {
+    pub intent_id: TxHash,
+    pub solver: AccountId,
+    pub fill_amount: u128,
+    pub nonce: u64,
+    pub timestamp_ns: u64,
+    pub signature: Vec<u8>,
+}
+
+impl IntentFillShift {
+    pub fn new(keypair: &KeyPair, intent_id: TxHash, fill_amount: u128, nonce: u64, timestamp_ns: u64) -> Self {
+        let solver = keypair.account_id();
+        let mut shift = Self {
+            intent_id,
+            solver,
+            fill_amount,
+            nonce,
+            timestamp_ns,
+            signature: Vec::new(),
+        };
+        let sig = keypair.sign(&shift.signing_bytes());
+        shift.signature = sig.to_bytes().to_vec();
+        shift
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(128);
+        buf.extend_from_slice(b"FLUIDIC:INTENT_FILL:v1");
+        buf.extend_from_slice(&self.intent_id);
+        buf.extend_from_slice(self.solver.as_bytes());
+        buf.extend_from_slice(&self.fill_amount.to_le_bytes());
+        buf.extend_from_slice(&self.nonce.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf
+    }
+
+    pub fn hash(&self) -> TxHash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&self.signing_bytes());
+        hasher.finalize().into()
+    }
+
+    pub fn verify(&self, public_key: &ed25519_dalek::VerifyingKey) -> bool {
+        let Ok(sig) = ed25519_dalek::Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        if !KeyPair::verify(public_key, &self.signing_bytes(), &sig) {
+            return false;
+        }
+        AccountId::from_public_key(public_key) == self.solver
+    }
+}
+
+/// Registers an agent account controlled by an owner.  The owner delegates
+/// limited authority to the agent key; the agent can sign shifts on the
+/// owner's behalf until `expiry_tick`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRegistrationShift {
+    pub agent: AccountId,
+    pub owner: AccountId,
+    pub public_key: [u8; 32],
+    pub expiry_tick: u64,
+    pub nonce: u64,
+    pub timestamp_ns: u64,
+    pub signature: Vec<u8>,
+}
+
+impl AgentRegistrationShift {
+    pub fn new(
+        owner_keypair: &KeyPair,
+        agent_public_key: &ed25519_dalek::VerifyingKey,
+        expiry_tick: u64,
+        nonce: u64,
+        timestamp_ns: u64,
+    ) -> Self {
+        let owner = owner_keypair.account_id();
+        let agent = AccountId::from_public_key(agent_public_key);
+        let mut shift = Self {
+            agent,
+            owner,
+            public_key: agent_public_key.to_bytes(),
+            expiry_tick,
+            nonce,
+            timestamp_ns,
+            signature: Vec::new(),
+        };
+        let sig = owner_keypair.sign(&shift.signing_bytes());
+        shift.signature = sig.to_bytes().to_vec();
+        shift
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(128);
+        buf.extend_from_slice(b"FLUIDIC:AGENT_REG:v1");
+        buf.extend_from_slice(self.agent.as_bytes());
+        buf.extend_from_slice(self.owner.as_bytes());
+        buf.extend_from_slice(&self.public_key);
+        buf.extend_from_slice(&self.expiry_tick.to_le_bytes());
+        buf.extend_from_slice(&self.nonce.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf
+    }
+
+    pub fn verify(&self, owner_public_key: &ed25519_dalek::VerifyingKey) -> bool {
+        let Ok(sig) = ed25519_dalek::Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        if !KeyPair::verify(owner_public_key, &self.signing_bytes(), &sig) {
+            return false;
+        }
+        AccountId::from_public_key(owner_public_key) == self.owner
+    }
+}
+
 /// A cryptographically signed Signal injected into a Concurrency Domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Signal {
@@ -311,10 +537,15 @@ pub enum Signal {
     Stateful(StatefulShift),
     Registration(RegistrationShift),
     Stake(StakeShift),
+    AgentRegistration(AgentRegistrationShift),
+    Intent(IntentShift),
+    IntentFill(IntentFillShift),
     /// Gossip probe: timestamp of the sender, used to estimate network RTT.
     Ping { timestamp_ns: u64, nonce: u64 },
     /// Response to a gossip probe.
     Pong { timestamp_ns: u64, nonce: u64 },
+    /// Encrypted mempool payload.  Decrypted by nodes that know the network PSK.
+    Encrypted(crate::crypto::encrypted::EncryptedSignal),
     /// Signed synthesis certificate gossiped between operators.
     Certificate(crate::consensus::certificate::SynthesisCertificate),
     /// Gossip authentication handshake. Sent immediately after connecting.
@@ -349,6 +580,18 @@ impl Signal {
                 hasher.update(&s.timestamp_ns.to_le_bytes());
                 hasher.finalize().into()
             }
+            Signal::AgentRegistration(s) => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(s.agent.as_bytes());
+                hasher.update(s.owner.as_bytes());
+                hasher.update(&s.public_key);
+                hasher.update(&s.expiry_tick.to_le_bytes());
+                hasher.update(&s.nonce.to_le_bytes());
+                hasher.update(&s.timestamp_ns.to_le_bytes());
+                hasher.finalize().into()
+            }
+            Signal::Intent(s) => s.hash(),
+            Signal::IntentFill(s) => s.hash(),
             Signal::Ping { timestamp_ns, nonce } | Signal::Pong { timestamp_ns, nonce } => {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(&timestamp_ns.to_le_bytes());
@@ -357,6 +600,14 @@ impl Signal {
             }
             Signal::Certificate(c) => c.hash(),
             Signal::Auth { proof } => *proof,
+            Signal::Encrypted(enc) => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(b"fluidic:signal:encrypted:v1");
+                hasher.update(&enc.nonce);
+                hasher.update(&enc.ciphertext);
+                hasher.update(&enc.tag);
+                hasher.finalize().into()
+            }
             Signal::PeerAnnounce(anns) => {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(b"fluidic:signal:peer-announce:v1");
@@ -374,9 +625,13 @@ impl Signal {
             Signal::Stateful(s) => s.timestamp_ns,
             Signal::Registration(s) => s.timestamp_ns,
             Signal::Stake(s) => s.timestamp_ns,
+            Signal::AgentRegistration(s) => s.timestamp_ns,
+            Signal::Intent(s) => s.timestamp_ns,
+            Signal::IntentFill(s) => s.timestamp_ns,
             Signal::Ping { timestamp_ns, .. } | Signal::Pong { timestamp_ns, .. } => *timestamp_ns,
             Signal::Certificate(c) => c.timestamp_ns,
             Signal::Auth { .. } => 0,
+            Signal::Encrypted(_) => 0,
             Signal::PeerAnnounce(anns) => {
                 anns.first().map(|a| a.timestamp_ns).unwrap_or(0)
             }

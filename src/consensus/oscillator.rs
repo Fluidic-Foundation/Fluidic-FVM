@@ -5,12 +5,13 @@ use crate::consensus::certificate::{
 use crate::consensus::dag::{DagError, RejectionProof, RejectionReason, ShiftStatus, VectorClockDag};
 use crate::consensus::domain::{DomainRegistry, StatefulOrdering};
 use crate::crypto::{
-    AccountId, CommutativeShift, DomainId, KeyPair, PoolId, RegistrationShift, Signal, StakeShift,
-    StatefulShift, TxHash, VectorClock, DEFAULT_DEX_DOMAIN,
+    AccountId, AgentRegistrationShift, CommutativeShift, DomainId, IntentConstraint, IntentFillShift,
+    IntentShift, KeyPair, PoolId, RegistrationShift, Signal, StakeShift, StatefulShift, TxHash,
+    VectorClock, DEFAULT_DEX_DOMAIN,
 };
 use crate::evm::EvmPool;
 use crate::field::coordinates::Coordinate;
-use crate::field::wave_field::WaveField;
+use crate::field::wave_field::{AccountType, WaveField};
 use crate::operator::{RewardPool, StakeTable, StakingConfig};
 use crate::value::metabolic::MetabolicDecayEngine;
 use crate::value::SupplyTracker;
@@ -37,6 +38,8 @@ pub struct SynthesisResult {
     pub stateful_rejected: Vec<DagError>,
     pub final_balances: HashMap<AccountId, u128>,
     pub metabolic_burned: u128,
+    /// Number of intents matched and settled this synthesis tick.
+    pub intents_matched: usize,
     /// Average latency (ms) from first seen to finalized for stateful + EVM shifts.
     pub avg_latency_ms: f64,
     /// Shifts processed per second during this synthesis cycle.
@@ -70,6 +73,10 @@ pub struct Oscillator {
     pub synthesis_tick: AtomicU64,
     /// Known concurrency domains and their policies.
     pub domain_registry: Arc<RwLock<DomainRegistry>>,
+    /// Pending intents awaiting matching and execution during synthesis.
+    pub pending_intents: Arc<Mutex<Vec<IntentShift>>>,
+    /// Pending intent fills submitted by solvers.
+    pub pending_intent_fills: Arc<Mutex<Vec<IntentFillShift>>>,
     /// Optional operator keypair used to sign synthesis certificates.
     pub operator_keypair: Option<KeyPair>,
     /// Signed synthesis certificates indexed by tick.
@@ -100,6 +107,8 @@ impl Oscillator {
             vector_clock: Arc::new(Mutex::new(VectorClock::new())),
             pending_commutative: Arc::new(Mutex::new(Vec::new())),
             pending_stateful: Arc::new(Mutex::new(Vec::new())),
+            pending_intents: Arc::new(Mutex::new(Vec::new())),
+            pending_intent_fills: Arc::new(Mutex::new(Vec::new())),
             seen_signatures: DashMap::new(),
             seen_nonces: DashMap::new(),
             metabolic_engine: Arc::new(MetabolicDecayEngine::new()),
@@ -303,6 +312,18 @@ impl Oscillator {
             Signal::Certificate(_) => Ok(()), // certificates are applied via ingest_certificate
             Signal::Auth { .. } => Ok(()),     // gossip-layer authentication, not state
             Signal::PeerAnnounce(_) => Ok(()), // peer discovery is handled by the gossip layer
+            Signal::AgentRegistration(reg) => {
+                if self.apply_agent_registration(&reg, key_registry) {
+                    Ok(())
+                } else {
+                    Err("agent registration rejected".to_string())
+                }
+            }
+            Signal::Intent(intent) => self.ingest_intent(intent, key_registry),
+            Signal::IntentFill(fill) => self.ingest_intent_fill(fill, key_registry),
+            Signal::Encrypted(_) => {
+                Err("encrypted signals must be decrypted before ingestion".to_string())
+            }
         }
     }
 
@@ -363,6 +384,92 @@ impl Oscillator {
         true
     }
 
+    /// Apply an agent-registration event.  Verifies the owner signature, checks
+    /// replay nonce, and marks the agent account in the wave-field.
+    pub fn apply_agent_registration(
+        &self,
+        reg: &AgentRegistrationShift,
+        key_registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> bool {
+        let Some(owner_pk) = key_registry.get(&reg.owner) else {
+            tracing::warn!("agent registration rejected: unknown owner {}", reg.owner);
+            return false;
+        };
+        if !reg.verify(owner_pk) {
+            tracing::warn!("agent registration rejected: invalid owner signature");
+            return false;
+        }
+        if let Err(e) = self.check_and_record_nonce(reg.owner, DomainId::default(), reg.nonce) {
+            tracing::warn!("agent registration rejected: {}", e);
+            return false;
+        }
+        let field = self.wave_field.lock().unwrap();
+        field.set_account_type(
+            reg.agent,
+            AccountType::Agent {
+                owner: reg.owner,
+                expiry_tick: reg.expiry_tick,
+            },
+        );
+        true
+    }
+
+    /// Validate and queue an intent.
+    pub fn ingest_intent(
+        &self,
+        intent: IntentShift,
+        key_registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> Result<(), String> {
+        let Some(owner_pk) = key_registry.get(&intent.owner) else {
+            return Err(format!("intent rejected: unknown owner {}", intent.owner));
+        };
+        if !intent.verify(owner_pk) {
+            return Err("intent rejected: invalid owner signature".to_string());
+        }
+        if let Err(e) = self.check_and_record_nonce(intent.owner, intent.domain, intent.nonce) {
+            return Err(format!("intent rejected: {}", e));
+        }
+        let tick = self.synthesis_tick.load(Ordering::SeqCst);
+        if intent.deadline_tick <= tick {
+            return Err(format!(
+                "intent rejected: deadline {} is not in the future (current tick {})",
+                intent.deadline_tick, tick
+            ));
+        }
+        // Ensure the owner can cover the solver reward.
+        {
+            let field = self.wave_field.lock().unwrap();
+            let balance = field.account_balance_in_domain(intent.domain, intent.owner).units;
+            if balance < intent.solver_reward {
+                return Err(format!(
+                    "intent rejected: insufficient balance for solver reward (need {}, have {})",
+                    intent.solver_reward, balance
+                ));
+            }
+        }
+        self.pending_intents.lock().unwrap().push(intent);
+        Ok(())
+    }
+
+    /// Validate and queue an intent fill from a solver.
+    pub fn ingest_intent_fill(
+        &self,
+        fill: IntentFillShift,
+        key_registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> Result<(), String> {
+        let Some(solver_pk) = key_registry.get(&fill.solver) else {
+            return Err(format!("intent fill rejected: unknown solver {}", fill.solver));
+        };
+        if !fill.verify(solver_pk) {
+            return Err("intent fill rejected: invalid solver signature".to_string());
+        }
+        if let Err(e) = self.check_and_record_nonce(fill.solver, DomainId::default(), fill.nonce) {
+            return Err(format!("intent fill rejected: {}", e));
+        }
+        self.pending_intent_fills.lock().unwrap().push(fill);
+        Ok(())
+    }
+
     /// Compute the execution fee for a stateful signal according to the fee
     /// policy of its domain.  Returns the fee in sub-units and the post-fee
     /// transfer amount.
@@ -391,6 +498,67 @@ impl Oscillator {
             }
             FeePolicy::MetabolicOnly => Ok((0, shift.amount)),
         }
+    }
+
+    /// Verify a batch of stateful shift signatures.  Verification is performed in
+    /// chunks so a single bad signature does not force individual re-verification
+    /// of the entire set.  Returns a vector aligned with `shifts` indicating
+    /// whether each shift's signature is valid.
+    fn batch_verify_stateful(
+        shifts: &[StatefulShift],
+        keys: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> Vec<bool> {
+        const BATCH_SIZE: usize = 64;
+        let mut results = vec![false; shifts.len()];
+
+        for (chunk_idx, chunk) in shifts.chunks(BATCH_SIZE).enumerate() {
+            let mut messages: Vec<Vec<u8>> = Vec::with_capacity(chunk.len());
+            let mut signatures: Vec<ed25519_dalek::Signature> = Vec::with_capacity(chunk.len());
+            let mut keys_chunk: Vec<ed25519_dalek::VerifyingKey> = Vec::with_capacity(chunk.len());
+            let mut valid_indices: Vec<usize> = Vec::with_capacity(chunk.len());
+
+            for (i, shift) in chunk.iter().enumerate() {
+                let idx = chunk_idx * BATCH_SIZE + i;
+                let Some(pk) = keys.get(&shift.from) else {
+                    results[idx] = false;
+                    continue;
+                };
+                let Ok(sig) = ed25519_dalek::Signature::from_slice(&shift.signature) else {
+                    results[idx] = false;
+                    continue;
+                };
+                messages.push(shift.signing_bytes());
+                signatures.push(sig);
+                keys_chunk.push(*pk);
+                valid_indices.push(idx);
+            }
+
+            if messages.is_empty() {
+                continue;
+            }
+
+            let msg_refs: Vec<&[u8]> = messages.iter().map(|m| m.as_slice()).collect();
+
+            match ed25519_dalek::verify_batch(&msg_refs, &signatures, &keys_chunk) {
+                Ok(()) => {
+                    for idx in valid_indices {
+                        results[idx] = true;
+                    }
+                }
+                Err(_) => {
+                    // Batch failed; fall back to individual verification to identify
+                    // the bad signature(s) without rejecting the whole chunk.
+                    for (i, shift) in chunk.iter().enumerate() {
+                        let idx = chunk_idx * BATCH_SIZE + i;
+                        if let Some(pk) = keys.get(&shift.from) {
+                            results[idx] = shift.verify_signature(pk);
+                        }
+                    }
+                }
+            }
+        }
+
+        results
     }
 
     /// Apply a registration event directly so every node learns the account.
@@ -494,6 +662,130 @@ impl Oscillator {
         let mut pending = self.pending_stateful.lock().unwrap();
         pending.push(shift);
         Ok(())
+    }
+
+    /// Match queued intent fills against open intents and settle them atomically
+    /// in the wave-field.  Unmatched intents and fills are re-queued for the
+    /// next synthesis tick; expired intents are dropped.
+    fn process_intents(
+        &self,
+        tick: u64,
+        result: &mut SynthesisResult,
+    ) {
+        let intents: Vec<IntentShift> = self.pending_intents.lock().unwrap().drain(..).collect();
+        let fills: Vec<IntentFillShift> = self.pending_intent_fills.lock().unwrap().drain(..).collect();
+        if intents.is_empty() && fills.is_empty() {
+            return;
+        }
+
+        let mut unmatched_intents: Vec<IntentShift> = Vec::new();
+        let mut unmatched_fills: Vec<IntentFillShift> = Vec::new();
+        let mut matched_intent_ids = std::collections::HashSet::new();
+
+        // Index open intents by id.
+        let mut intent_by_id: HashMap<TxHash, IntentShift> = HashMap::new();
+        for intent in intents {
+            if tick > intent.deadline_tick {
+                tracing::trace!(
+                    "intent {} expired at tick {}",
+                    hex::encode(intent.intent_id),
+                    tick
+                );
+                continue;
+            }
+            intent_by_id.insert(intent.intent_id, intent);
+        }
+
+        let field = self.wave_field.lock().unwrap();
+
+        for fill in fills {
+            let Some(intent) = intent_by_id.get(&fill.intent_id) else {
+                unmatched_fills.push(fill);
+                continue;
+            };
+            if matched_intent_ids.contains(&intent.intent_id) {
+                unmatched_fills.push(fill);
+                continue;
+            }
+
+            // Owner must still be able to cover the reward.
+            let owner_balance = field.account_balance_in_domain(intent.domain, intent.owner).units;
+            if owner_balance < intent.solver_reward {
+                unmatched_fills.push(fill);
+                continue;
+            }
+
+            let settled = match &intent.constraint {
+                IntentConstraint::Transfer { to, min_amount } => {
+                    if fill.fill_amount < *min_amount {
+                        false
+                    } else if owner_balance < intent.solver_reward.saturating_add(fill.fill_amount) {
+                        false
+                    } else {
+                        // owner -> beneficiary
+                        field.debit_account_in_domain(intent.domain, intent.owner, fill.fill_amount);
+                        field.credit_account_in_domain(intent.domain, *to, fill.fill_amount);
+                        // owner -> solver reward
+                        field.debit_account_in_domain(intent.domain, intent.owner, intent.solver_reward);
+                        field.credit_account_in_domain(intent.domain, fill.solver, intent.solver_reward);
+                        field.mark_active_in_domain(intent.domain, intent.owner, tick);
+                        field.mark_active_in_domain(intent.domain, *to, tick);
+                        field.mark_active_in_domain(intent.domain, fill.solver, tick);
+                        true
+                    }
+                }
+                IntentConstraint::Swap {
+                    from_token: _,
+                    to_token: _,
+                    min_out,
+                    max_slippage_bp: _,
+                } => {
+                    // Direct atomic exchange: owner gives fill_amount of the input
+                    // asset to the solver, solver gives min_out of the output asset
+                    // to the owner.  We debit/credit the same account for both assets
+                    // because the current domain model uses one balance per account;
+                    // multi-token settlement will use domain-isolated token accounts.
+                    let owner_from = field.account_balance_in_domain(intent.domain, intent.owner).units;
+                    let solver_to = field.account_balance_in_domain(intent.domain, fill.solver).units;
+                    if owner_from < fill.fill_amount || solver_to < *min_out {
+                        false
+                    } else {
+                        field.debit_account_in_domain(intent.domain, intent.owner, fill.fill_amount);
+                        field.credit_account_in_domain(intent.domain, fill.solver, fill.fill_amount);
+                        field.debit_account_in_domain(intent.domain, fill.solver, *min_out);
+                        field.credit_account_in_domain(intent.domain, intent.owner, *min_out);
+                        field.debit_account_in_domain(intent.domain, intent.owner, intent.solver_reward);
+                        field.credit_account_in_domain(intent.domain, fill.solver, intent.solver_reward);
+                        field.mark_active_in_domain(intent.domain, intent.owner, tick);
+                        field.mark_active_in_domain(intent.domain, fill.solver, tick);
+                        true
+                    }
+                }
+            };
+
+            if settled {
+                matched_intent_ids.insert(intent.intent_id);
+                field.adjust_reputation_in_domain(intent.domain, fill.solver, 1);
+                result.intents_matched += 1;
+            } else {
+                unmatched_fills.push(fill);
+            }
+        }
+
+        // Return unmatched intents to the pool.
+        for (_, intent) in intent_by_id {
+            if !matched_intent_ids.contains(&intent.intent_id) {
+                unmatched_intents.push(intent);
+            }
+        }
+        drop(field);
+
+        if !unmatched_intents.is_empty() {
+            self.pending_intents.lock().unwrap().extend(unmatched_intents);
+        }
+        if !unmatched_fills.is_empty() {
+            self.pending_intent_fills.lock().unwrap().extend(unmatched_fills);
+        }
     }
 
     /// Synthesize all pending commutative deltas via NTT and apply stateful
@@ -703,6 +995,33 @@ impl Oscillator {
         let mut stateful_hashes = Vec::with_capacity(order.len());
         let mut active_accounts = std::collections::HashSet::new();
         let mut total_fees = 0u128;
+        // Pre-compute fees while we hold the DAG so the fee-deduction phase does
+        // not need to re-acquire the lock or re-run fee policy logic.
+        let mut stateful_fees: std::collections::HashMap<TxHash, (AccountId, u128)> =
+            std::collections::HashMap::new();
+
+        // Batch-verify signatures for all candidate shifts up-front.  This is
+        // significantly faster than verifying one-by-one because ed25519 batch
+        // verification amortizes the scalar multiplication cost.
+        let candidate_shifts: Vec<StatefulShift> = order
+            .iter()
+            .filter_map(|hash| {
+                let node = dag.nodes.get(hash).expect("hash in DAG");
+                if matches!(node.status, ShiftStatus::Rejected(_)) || node.applied {
+                    None
+                } else {
+                    Some(node.shift.clone())
+                }
+            })
+            .collect();
+        let verification_results = Self::batch_verify_stateful(&candidate_shifts, key_registry);
+        let valid_shift_set: std::collections::HashSet<TxHash> = candidate_shifts
+            .iter()
+            .zip(verification_results.iter())
+            .filter(|(_, valid)| **valid)
+            .map(|(shift, _)| shift.hash())
+            .collect();
+
         for hash in order {
             let node = dag.nodes.get(&hash).expect("hash in DAG");
 
@@ -713,13 +1032,7 @@ impl Oscillator {
 
             let shift = &node.shift;
 
-            let Some(pk) = key_registry.get(&shift.from) else {
-                let err = DagError::InvalidSignature(hash);
-                self.sign_rejection_proof(&mut dag, hash, RejectionReason::InvalidSignature, tick);
-                result.stateful_rejected.push(err);
-                continue;
-            };
-            if !shift.verify_signature(pk) {
+            if !valid_shift_set.contains(&hash) {
                 let err = DagError::InvalidSignature(hash);
                 self.sign_rejection_proof(&mut dag, hash, RejectionReason::InvalidSignature, tick);
                 result.stateful_rejected.push(err);
@@ -772,6 +1085,7 @@ impl Oscillator {
             total_fees = total_fees.saturating_add(fee);
             result.stateful_applied += 1;
             stateful_hashes.push(hash);
+            stateful_fees.insert(hash, (shift.from, fee));
             // Record both parties as active so they receive metabolic-decay
             // grace starting next tick.  Self-transfers do not count as real
             // economic activity, otherwise a whale could bypass decay for free by
@@ -795,19 +1109,12 @@ impl Oscillator {
         };
 
         // Deduct accumulated signal fees from the wave-field sender balances and
-        // add them to the reward pool.  Compute fee_debt while holding the DAG,
-        // then release it before touching wave_field to preserve the global
-        // dag-first lock order.
+        // add them to the reward pool.  Fees were pre-computed during the DAG pass
+        // above, so we do not need to re-acquire the DAG lock here.
         if total_fees > 0 {
             let mut fee_debt: std::collections::HashMap<AccountId, u128> = std::collections::HashMap::new();
-            {
-                let dag = self.dag.lock().unwrap();
-                for hash in &stateful_hashes {
-                    if let Some(node) = dag.nodes.get(hash) {
-                        let (fee, _) = self.compute_signal_fee(&node.shift).unwrap_or((0, node.shift.amount));
-                        *fee_debt.entry(node.shift.from).or_insert(0) += fee;
-                    }
-                }
+            for (_, (from, fee)) in &stateful_fees {
+                *fee_debt.entry(*from).or_insert(0) += fee;
             }
             {
                 let field = self.wave_field.lock().unwrap();
@@ -836,21 +1143,26 @@ impl Oscillator {
         // Sync wave-field account balances with DAG result.  Because fees were
         // already debited above, only transfer the net simulated balances here
         // so we do not double-charge the sender.
-        let field = self.wave_field.lock().unwrap();
-        for (account, balance) in &simulated_balances {
-            field.ensure_account(*account);
-            if let Some(dex) = field.domains.get(&DEFAULT_DEX_DOMAIN) {
-                if let Some(mut state) = dex.accounts.get_mut(account) {
-                    state.balance.units = *balance;
-                    // Accounts touched by an applied stateful shift this tick start
-                    // their activity grace window.
-                    if active_accounts.contains(account) {
-                        state.balance.last_active_tick = tick;
+        {
+            let field = self.wave_field.lock().unwrap();
+            for (account, balance) in &simulated_balances {
+                field.ensure_account(*account);
+                if let Some(dex) = field.domains.get(&DEFAULT_DEX_DOMAIN) {
+                    if let Some(mut state) = dex.accounts.get_mut(account) {
+                        state.balance.units = *balance;
+                        // Accounts touched by an applied stateful shift this tick start
+                        // their activity grace window.
+                        if active_accounts.contains(account) {
+                            state.balance.last_active_tick = tick;
+                        }
                     }
                 }
             }
+            result.final_balances = simulated_balances.clone();
         }
-        result.final_balances = simulated_balances.clone();
+
+        // 3c. Match and settle intents atomically using the latest balances.
+        self.process_intents(tick, &mut result);
 
         // 4. Optionally sign a synthesis certificate if the operator is staked.
         if let Some(ref op_kp) = self.operator_keypair {

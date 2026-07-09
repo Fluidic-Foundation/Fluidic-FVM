@@ -1,7 +1,11 @@
 use crate::api::state::{ApiState, RecentShift, build_pool_payout_shift};
 use crate::consensus::domain::{DomainPolicy, FeePolicy, StatefulOrdering};
 use crate::consensus::dag::{DagError, RejectionReason, ShiftStatus, VectorClockDag};
-use crate::crypto::{AccountId, CommutativeShift, KeyPair, Signal, StakeShift, StatefulShift};
+use crate::crypto::{
+    decrypt_signal, encrypt_signal, AccountId, AgentRegistrationShift, CommutativeShift,
+    EncryptedSignal, IntentConstraint, IntentFillShift, IntentShift, KeyPair, Signal, StakeShift,
+    StatefulShift,
+};
 use crate::evm::{block_hash_for, evm_address_to_fluidic};
 use axum::{
     extract::{Path, Query, State, WebSocketUpgrade},
@@ -22,6 +26,12 @@ pub fn api_router() -> Router<Arc<ApiState>> {
         .route("/api/account/:id/shifts", get(get_account_shifts))
         .route("/api/account/:id", get(get_account_overview))
         .route("/api/account/register", post(register_account))
+        .route("/api/agent/register", post(register_agent))
+        .route("/api/intent/submit", post(submit_intent))
+        .route("/api/intent/fill", post(submit_intent_fill))
+        .route("/api/intents/open", get(get_open_intents))
+        .route("/api/shift/encrypt", post(encrypt_shift))
+        .route("/api/shift/submit-encrypted", post(submit_encrypted_shift))
         .route("/api/shift/commutative", post(submit_commutative))
         .route("/api/shift/stateful", post(submit_stateful))
         .route("/api/shifts/recent", get(get_recent_shifts))
@@ -61,6 +71,7 @@ struct StateResponse {
     commutative_applied: usize,
     stateful_applied: usize,
     evm_applied: usize,
+    intents_matched: usize,
     pool_wave_account: String,
     pool_usdc_account: String,
 }
@@ -121,6 +132,7 @@ async fn get_state(
         commutative_applied: snap.commutative_applied,
         stateful_applied: snap.stateful_applied,
         evm_applied: snap.evm_applied,
+        intents_matched: snap.intents_matched,
         pool_wave_account: hex::encode(state.pool_wave_account.0),
         pool_usdc_account: hex::encode(state.pool_usdc_account.0),
     })
@@ -296,6 +308,320 @@ async fn register_account(
         "account_id": account.to_string(),
         "wave_account": hex::encode(wave_acc.0),
         "usdc_account": hex::encode(usdc_acc.0),
+    })))
+}
+
+#[derive(Deserialize)]
+struct RegisterAgentRequest {
+    owner: String,
+    agent_public_key_hex: String,
+    expiry_tick: u64,
+    nonce: u64,
+    timestamp_ns: u64,
+    signature: String,
+}
+
+async fn register_agent(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<RegisterAgentRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let owner = parse_account(&req.owner).map_err(|e| (e, "invalid owner account".to_string()))?;
+    let pk_bytes = hex::decode(&req.agent_public_key_hex)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid agent public key hex".to_string()))?;
+    let vk = VerifyingKey::from_bytes(
+        &pk_bytes.try_into().map_err(|_| {
+            (StatusCode::BAD_REQUEST, "invalid agent public key length".to_string())
+        })?,
+    )
+    .map_err(|_| (StatusCode::BAD_REQUEST, "invalid agent public key".to_string()))?;
+    let agent = AccountId::from_public_key(&vk);
+    let signature = hex::decode(&req.signature)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid signature hex".to_string()))?;
+
+    let reg = AgentRegistrationShift {
+        agent,
+        owner,
+        public_key: vk.to_bytes(),
+        expiry_tick: req.expiry_tick,
+        nonce: req.nonce,
+        timestamp_ns: req.timestamp_ns,
+        signature,
+    };
+
+    let registry = state.key_registry();
+    if !reg.verify(
+        registry
+            .get(&owner)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unknown owner".to_string()))?,
+    ) {
+        return Err((StatusCode::UNAUTHORIZED, "invalid owner signature".to_string()));
+    }
+
+    state.register_key(agent, vk);
+    state.broadcast_agent_registration(reg.clone());
+
+    let registry = state.key_registry();
+    state
+        .oscillator
+        .ingest(Signal::AgentRegistration(reg), &registry)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("agent registration ingest failed: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "agent_id": agent.to_string(),
+        "owner": owner.to_string(),
+        "expiry_tick": req.expiry_tick,
+    })))
+}
+
+#[derive(Deserialize)]
+struct IntentRequest {
+    owner: String,
+    #[serde(default)]
+    domain: Option<String>,
+    deadline_tick: u64,
+    constraint: IntentConstraintRequest,
+    solver_reward: String,
+    nonce: u64,
+    timestamp_ns: u64,
+    signature: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum IntentConstraintRequest {
+    Transfer { to: String, min_amount: String },
+    Swap {
+        from_token: String,
+        to_token: String,
+        min_out: String,
+        max_slippage_bp: u64,
+    },
+}
+
+impl IntentConstraintRequest {
+    fn into_constraint(self) -> Result<IntentConstraint, (StatusCode, String)> {
+        match self {
+            IntentConstraintRequest::Transfer { to, min_amount } => Ok(IntentConstraint::Transfer {
+                to: parse_account(&to).map_err(|e| (e, "invalid transfer to account".to_string()))?,
+                min_amount: parse_u128(&min_amount)
+                    .map_err(|e| (e, "invalid min_amount".to_string()))?,
+            }),
+            IntentConstraintRequest::Swap {
+                from_token,
+                to_token,
+                min_out,
+                max_slippage_bp,
+            } => Ok(IntentConstraint::Swap {
+                from_token: parse_account(&from_token)
+                    .map_err(|e| (e, "invalid from_token".to_string()))?,
+                to_token: parse_account(&to_token)
+                    .map_err(|e| (e, "invalid to_token".to_string()))?,
+                min_out: parse_u128(&min_out).map_err(|e| (e, "invalid min_out".to_string()))?,
+                max_slippage_bp,
+            }),
+        }
+    }
+}
+
+async fn submit_intent(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<IntentRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let owner = parse_account(&req.owner).map_err(|e| (e, "invalid owner account".to_string()))?;
+    let domain = match req.domain {
+        Some(hex) => parse_domain(&hex).map_err(|e| (e, "invalid domain".to_string()))?,
+        None => crate::crypto::DEFAULT_DEX_DOMAIN,
+    };
+    let constraint = req.constraint.into_constraint()?;
+    let solver_reward = parse_u128(&req.solver_reward)
+        .map_err(|e| (e, "invalid solver_reward".to_string()))?;
+    let signature = hex::decode(&req.signature)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid signature hex".to_string()))?;
+
+    let mut intent = IntentShift {
+        owner,
+        intent_id: [0u8; 32],
+        domain,
+        deadline_tick: req.deadline_tick,
+        constraint,
+        solver_reward,
+        nonce: req.nonce,
+        timestamp_ns: req.timestamp_ns,
+        signature,
+    };
+    intent.intent_id = intent.hash();
+
+    let registry = state.key_registry();
+    if !intent.verify(
+        registry
+            .get(&owner)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unknown owner".to_string()))?,
+    ) {
+        return Err((StatusCode::UNAUTHORIZED, "invalid owner signature".to_string()));
+    }
+
+    let hash = intent.hash();
+    state.broadcast_intent(intent.clone());
+    state
+        .oscillator
+        .ingest(Signal::Intent(intent), &registry)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("intent ingest failed: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "queued",
+        "intent_id": hex::encode(hash),
+    })))
+}
+
+#[derive(Deserialize)]
+struct IntentFillRequest {
+    intent_id: String,
+    solver: String,
+    fill_amount: String,
+    nonce: u64,
+    timestamp_ns: u64,
+    signature: String,
+}
+
+async fn submit_intent_fill(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<IntentFillRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let intent_id = parse_hash(&req.intent_id)
+        .map_err(|e| (e, "invalid intent_id".to_string()))?;
+    let solver = parse_account(&req.solver).map_err(|e| (e, "invalid solver account".to_string()))?;
+    let fill_amount = parse_u128(&req.fill_amount)
+        .map_err(|e| (e, "invalid fill_amount".to_string()))?;
+    let signature = hex::decode(&req.signature)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid signature hex".to_string()))?;
+
+    let fill = IntentFillShift {
+        intent_id,
+        solver,
+        fill_amount,
+        nonce: req.nonce,
+        timestamp_ns: req.timestamp_ns,
+        signature,
+    };
+
+    let registry = state.key_registry();
+    if !fill.verify(
+        registry
+            .get(&solver)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unknown solver".to_string()))?,
+    ) {
+        return Err((StatusCode::UNAUTHORIZED, "invalid solver signature".to_string()));
+    }
+
+    let hash = fill.hash();
+    state.broadcast_intent_fill(fill.clone());
+    state
+        .oscillator
+        .ingest(Signal::IntentFill(fill), &registry)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("intent fill ingest failed: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "queued",
+        "fill_hash": hex::encode(hash),
+    })))
+}
+
+async fn get_open_intents(State(state): State<Arc<ApiState>>) -> Json<serde_json::Value> {
+    let intents: Vec<_> = state
+        .oscillator
+        .pending_intents
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            serde_json::json!({
+                "intent_id": hex::encode(i.intent_id),
+                "owner": i.owner.to_string(),
+                "domain": hex::encode(i.domain),
+                "deadline_tick": i.deadline_tick,
+                "solver_reward": i.solver_reward.to_string(),
+                "nonce": i.nonce,
+                "timestamp_ns": i.timestamp_ns,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "intents": intents }))
+}
+
+#[derive(Deserialize)]
+struct EncryptShiftRequest {
+    /// Hex-encoded network PSK used to encrypt the payload.
+    psk_hex: String,
+    /// JSON-serialized inner signal to encrypt.
+    signal: serde_json::Value,
+}
+
+async fn encrypt_shift(
+    Json(req): Json<EncryptShiftRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let psk = hex::decode(&req.psk_hex)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid psk hex".to_string()))?;
+    let signal: Signal = serde_json::from_value(req.signal)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid signal json: {}", e)))?;
+    let enc = encrypt_signal(&psk, &signal)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("encryption failed: {}", e)))?;
+    Ok(Json(serde_json::json!({
+        "nonce": hex::encode(enc.nonce),
+        "ciphertext": hex::encode(&enc.ciphertext),
+        "tag": hex::encode(enc.tag),
+    })))
+}
+
+#[derive(Deserialize)]
+struct SubmitEncryptedShiftRequest {
+    /// Hex-encoded network PSK used to decrypt the payload.
+    psk_hex: String,
+    nonce: String,
+    ciphertext: String,
+    tag: String,
+}
+
+async fn submit_encrypted_shift(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<SubmitEncryptedShiftRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let psk = hex::decode(&req.psk_hex)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid psk hex".to_string()))?;
+    let nonce_bytes = hex::decode(&req.nonce)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid nonce hex".to_string()))?;
+    let mut nonce = [0u8; 12];
+    if nonce_bytes.len() != 12 {
+        return Err((StatusCode::BAD_REQUEST, "nonce must be 12 bytes".to_string()));
+    }
+    nonce.copy_from_slice(&nonce_bytes);
+    let ciphertext = hex::decode(&req.ciphertext)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid ciphertext hex".to_string()))?;
+    let tag_bytes = hex::decode(&req.tag)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid tag hex".to_string()))?;
+    let mut tag = [0u8; 16];
+    if tag_bytes.len() != 16 {
+        return Err((StatusCode::BAD_REQUEST, "tag must be 16 bytes".to_string()));
+    }
+    tag.copy_from_slice(&tag_bytes);
+
+    let enc = EncryptedSignal {
+        nonce,
+        ciphertext,
+        tag,
+    };
+    let signal = decrypt_signal(&psk, &enc)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("decryption failed: {}", e)))?;
+
+    let registry = state.key_registry();
+    let hash = signal.hash();
+    state
+        .oscillator
+        .ingest(signal, &registry)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("ingest failed: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "queued",
+        "hash": hex::encode(hash),
     })))
 }
 
