@@ -96,7 +96,7 @@ Your node is online when you see `API server listening on 0.0.0.0:8080`. Point a
 
 ## AI-era moat features
 
-- **Agent accounts**: an owner can register a delegated agent key that signs shifts on the owner's behalf until an expiry tick. Use `POST /api/agent/register`.
+- **Agent accounts**: an owner can register a delegated agent key that signs shifts on the owner's behalf until an expiry tick. Registration costs a small anti-spam fee (currently 1 WAVE) which is redistributed to operators and LPs. Use `POST /api/agent/register`.
 - **Intents**: users post outcome-based intents with a solver reward; solvers compete to fill them. Intents are matched atomically during synthesis and settle as ordinary stateful shifts. Use `POST /api/intent/submit` and `POST /api/intent/fill`.
 - **Encrypted mempool**: any signal can be wrapped in `Signal::Encrypted` using ChaCha20-Poly1305 and the network PSK (`FLUIDIC_PSK`). Nodes decrypt at ingestion, so passive observers cannot read pending transactions. Use `POST /api/shift/encrypt` and `POST /api/shift/submit-encrypted`.
 - **Sub-100ms finality**: the default synthesis interval is 100 ms and the stateful path uses batch Ed25519 signature verification and pre-computed fees to keep each tick fast.

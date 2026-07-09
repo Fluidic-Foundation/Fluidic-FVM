@@ -11,12 +11,13 @@ fn registry(keys: &[KeyPair]) -> HashMap<AccountId, ed25519_dalek::VerifyingKey>
 }
 
 #[test]
-fn agent_registration_sets_account_type() {
+fn agent_registration_sets_account_type_and_deducts_fee() {
     let osc = Oscillator::new([1u8; 32], 16);
     let owner = KeyPair::generate();
     let agent = KeyPair::generate();
 
-    osc.seed_account(owner.account_id(), 1_000_000_000_000_000);
+    let initial = 1_000_000_000_000_000u128;
+    osc.seed_account(owner.account_id(), initial);
 
     let reg = AgentRegistrationShift::new(
         &owner,
@@ -41,6 +42,37 @@ fn agent_registration_sets_account_type() {
         ),
         "agent account type should be set"
     );
+
+    let expected_balance = initial - fluidic::consensus::domain::agent_registration_fee_units();
+    assert_eq!(
+        field.account_balance(owner.account_id()).units,
+        expected_balance,
+        "owner should be charged the agent registration fee"
+    );
+}
+
+#[test]
+fn agent_registration_rejected_without_balance() {
+    let osc = Oscillator::new([1u8; 32], 16);
+    let owner = KeyPair::generate();
+    let agent = KeyPair::generate();
+
+    // Seed just below the fee.
+    osc.seed_account(
+        owner.account_id(),
+        fluidic::consensus::domain::agent_registration_fee_units() - 1,
+    );
+
+    let reg = AgentRegistrationShift::new(
+        &owner,
+        &agent.public_key(),
+        100,
+        1,
+        0,
+    );
+
+    let keys = registry(&[owner.clone(), agent.clone()]);
+    assert!(!osc.apply_agent_registration(&reg, &keys));
 }
 
 #[test]

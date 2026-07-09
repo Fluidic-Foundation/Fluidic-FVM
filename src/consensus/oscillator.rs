@@ -403,14 +403,34 @@ impl Oscillator {
             tracing::warn!("agent registration rejected: {}", e);
             return false;
         }
-        let field = self.wave_field.lock().unwrap();
-        field.set_account_type(
-            reg.agent,
-            AccountType::Agent {
-                owner: reg.owner,
-                expiry_tick: reg.expiry_tick,
-            },
-        );
+
+        let fee = crate::consensus::domain::agent_registration_fee_units();
+        {
+            let field = self.wave_field.lock().unwrap();
+            if field.account_balance(reg.owner).units < fee {
+                tracing::warn!(
+                    "agent registration rejected: owner {} cannot afford {} WAVE fee",
+                    reg.owner,
+                    crate::consensus::domain::AGENT_REGISTRATION_FEE_WAVE
+                );
+                return false;
+            }
+            if !field.debit_account(reg.owner, fee) {
+                tracing::warn!("agent registration rejected: failed to debit fee from {}", reg.owner);
+                return false;
+            }
+            field.set_account_type(
+                reg.agent,
+                AccountType::Agent {
+                    owner: reg.owner,
+                    expiry_tick: reg.expiry_tick,
+                },
+            );
+        }
+        {
+            let reward_pool = self.reward_pool.read().unwrap();
+            reward_pool.distribute_fees(fee, &self.stake_table);
+        }
         true
     }
 

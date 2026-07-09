@@ -9,6 +9,15 @@ pub const DOMAIN_RESERVATION_FEE_WAVE: u128 = 100;
 pub fn domain_reservation_fee_units() -> u128 {
     DOMAIN_RESERVATION_FEE_WAVE * crate::field::wave_field::WAVE_PRECISION
 }
+/// Number of whole WAVE tokens required to register an agent account.
+/// Paid once per agent and redistributed to operators/LPs.
+pub const AGENT_REGISTRATION_FEE_WAVE: u128 = 1;
+
+/// Agent registration fee in sub-units (precision-aware).
+pub fn agent_registration_fee_units() -> u128 {
+    AGENT_REGISTRATION_FEE_WAVE * crate::field::wave_field::WAVE_PRECISION
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatefulOrdering {
     /// Causal, vector-clock DAG ordering (default for state-dependent value).

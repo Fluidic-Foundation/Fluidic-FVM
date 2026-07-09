@@ -357,14 +357,14 @@ async fn register_agent(
         return Err((StatusCode::UNAUTHORIZED, "invalid owner signature".to_string()));
     }
 
-    state.register_key(agent, vk);
-    state.broadcast_agent_registration(reg.clone());
-
-    let registry = state.key_registry();
+    // Apply the registration (and debit the anti-spam fee) before gossiping it.
     state
         .oscillator
-        .ingest(Signal::AgentRegistration(reg), &registry)
+        .ingest(Signal::AgentRegistration(reg.clone()), &registry)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("agent registration ingest failed: {}", e)))?;
+
+    state.register_key(agent, vk);
+    state.broadcast_agent_registration(reg);
 
     Ok(Json(serde_json::json!({
         "agent_id": agent.to_string(),
