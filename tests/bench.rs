@@ -289,6 +289,7 @@ async fn sub_100ms_finality() {
         osc.seed_account(kp.account_id(), 1_000_000_000_000_000);
     }
 
+    let mut total = Duration::ZERO;
     let mut nonce = 1u64;
     for _ in 0..TICKS {
         for i in 0..COMMUTATIVE_PER_TICK {
@@ -327,6 +328,7 @@ async fn sub_100ms_finality() {
         let start = Instant::now();
         let result = osc.synthesize(&registry);
         let elapsed = start.elapsed();
+        total += elapsed;
 
         assert!(
             elapsed < Duration::from_millis(100),
@@ -337,5 +339,9 @@ async fn sub_100ms_finality() {
         );
     }
 
-    println!("sub-100ms finality: {} ticks passed", TICKS);
+    println!(
+        "sub-100ms finality: {} ticks passed, avg synthesis {:?}",
+        TICKS,
+        total / TICKS as u32
+    );
 }

@@ -1,7 +1,7 @@
 use crate::consensus::{Oscillator, ShiftStatus, SynthesisResult};
 use crate::crypto::{
-    AccountId, AgentRegistrationShift, IntentFillShift, IntentShift, KeyPair, RegistrationShift,
-    Signal, StakeShift, StatefulShift, VectorClock,
+    AccountId, AgentRegistrationShift, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation,
+    RegistrationShift, Signal, StakeShift, StatefulShift, VectorClock,
 };
 use crate::network::PeerDirectory;
 use ed25519_dalek::VerifyingKey;
@@ -35,6 +35,10 @@ pub struct StateSnapshot {
     pub stateful_applied: usize,
     pub evm_applied: usize,
     pub intents_matched: usize,
+    /// Experimental: physical attestations ingested since the last snapshot.
+    pub physical_attestations_ingested: usize,
+    /// Experimental: physical-state intents matched since the last snapshot.
+    pub physical_intents_matched: usize,
     pub accounts: HashMap<String, u128>,
 }
 
@@ -44,6 +48,10 @@ pub struct SynthesisStats {
     pub stateful_applied: usize,
     pub evm_applied: usize,
     pub intents_matched: usize,
+    /// Experimental: physical attestations ingested since the last snapshot.
+    pub physical_attestations_ingested: usize,
+    /// Experimental: physical-state intents matched since the last snapshot.
+    pub physical_intents_matched: usize,
     pub avg_latency_ms: f64,
     pub throughput_per_sec: f64,
     pub network_ms: f64,
@@ -189,6 +197,19 @@ impl ApiState {
         }
     }
 
+    /// Experimental: broadcast a physical-state attestation to mesh peers.
+    pub fn broadcast_physical_attestation(&self, attestation: PhysicalAttestation) {
+        if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
+            let sender = sender.clone();
+            let signal = Signal::PhysicalAttestation(attestation);
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(signal).await {
+                    tracing::warn!("failed to broadcast physical attestation: {}", e);
+                }
+            });
+        }
+    }
+
     pub fn register_key(&self, account: AccountId, key: VerifyingKey) {
         self.registry.write().unwrap().insert(account, key);
     }
@@ -211,6 +232,8 @@ impl ApiState {
         stats.stateful_applied += result.stateful_applied;
         stats.evm_applied += result.evm_applied;
         stats.intents_matched += result.intents_matched;
+        stats.physical_attestations_ingested += result.physical_attestations_ingested;
+        stats.physical_intents_matched += result.physical_intents_matched;
         stats.avg_latency_ms = result.avg_latency_ms;
         stats.throughput_per_sec = result.throughput_per_sec;
     }
@@ -298,6 +321,8 @@ impl ApiState {
             stateful_applied: stats.stateful_applied,
             evm_applied: stats.evm_applied,
             intents_matched: stats.intents_matched,
+            physical_attestations_ingested: stats.physical_attestations_ingested,
+            physical_intents_matched: stats.physical_intents_matched,
             accounts: HashMap::new(),
         }
     }

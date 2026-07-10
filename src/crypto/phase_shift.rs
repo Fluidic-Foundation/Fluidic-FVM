@@ -304,6 +304,108 @@ impl StakeShift {
     }
 }
 
+/// Experimental: a class of real-world resource that a DePIN node can attest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhysicalResourceType {
+    Storage,
+    Bandwidth,
+    Compute,
+    Energy,
+    Sensor,
+}
+
+impl PhysicalResourceType {
+    pub fn tag_byte(&self) -> u8 {
+        match self {
+            PhysicalResourceType::Storage => 0,
+            PhysicalResourceType::Bandwidth => 1,
+            PhysicalResourceType::Compute => 2,
+            PhysicalResourceType::Energy => 3,
+            PhysicalResourceType::Sensor => 4,
+        }
+    }
+}
+
+/// Experimental: a signed physical-state attestation published by a DePIN node.
+/// The publisher commits to having a real-world resource available for a number
+/// of synthesis ticks, at a per-unit price paid in WAVE sub-units.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhysicalAttestation {
+    pub publisher: AccountId,
+    pub attestation_id: TxHash,
+    pub resource_type: PhysicalResourceType,
+    pub location: String,
+    pub capacity: u128,
+    pub price_per_unit: u128,
+    pub available_until_tick: u64,
+    pub nonce: u64,
+    pub timestamp_ns: u64,
+    pub signature: Vec<u8>,
+}
+
+impl PhysicalAttestation {
+    pub fn new(
+        keypair: &KeyPair,
+        resource_type: PhysicalResourceType,
+        location: String,
+        capacity: u128,
+        price_per_unit: u128,
+        available_until_tick: u64,
+        nonce: u64,
+        timestamp_ns: u64,
+    ) -> Self {
+        let publisher = keypair.account_id();
+        let mut attestation = Self {
+            publisher,
+            attestation_id: [0u8; 32],
+            resource_type,
+            location,
+            capacity,
+            price_per_unit,
+            available_until_tick,
+            nonce,
+            timestamp_ns,
+            signature: Vec::new(),
+        };
+        attestation.attestation_id = attestation.hash();
+        let sig = keypair.sign(&attestation.signing_bytes());
+        attestation.signature = sig.to_bytes().to_vec();
+        attestation
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(b"FLUIDIC:PHYSICAL_ATTESTATION:v1");
+        buf.extend_from_slice(self.publisher.as_bytes());
+        buf.push(self.resource_type.tag_byte());
+        buf.extend_from_slice(self.location.as_bytes());
+        buf.extend_from_slice(&self.capacity.to_le_bytes());
+        buf.extend_from_slice(&self.price_per_unit.to_le_bytes());
+        buf.extend_from_slice(&self.available_until_tick.to_le_bytes());
+        buf.extend_from_slice(&self.nonce.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf
+    }
+
+    pub fn hash(&self) -> TxHash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&self.signing_bytes());
+        hasher.update(&self.signature);
+        hasher.finalize().into()
+    }
+
+    pub fn verify(&self, public_key: &ed25519_dalek::VerifyingKey) -> bool {
+        let Ok(sig) = Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        if !KeyPair::verify(public_key, &self.signing_bytes(), &sig) {
+            return false;
+        }
+        AccountId::from_public_key(public_key) == self.publisher
+    }
+}
+
 /// Constraints an intent places on its execution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IntentConstraint {
@@ -316,6 +418,14 @@ pub enum IntentConstraint {
         to_token: AccountId,
         min_out: u128,
         max_slippage_bp: u64,
+    },
+    /// Experimental: request a physical resource from a DePIN attestation.
+    PhysicalResource {
+        resource_type: PhysicalResourceType,
+        location_prefix: String,
+        min_capacity: u128,
+        max_price_per_unit: u128,
+        duration_ticks: u64,
     },
 }
 
@@ -387,6 +497,20 @@ impl IntentShift {
                 buf.extend_from_slice(to_token.as_bytes());
                 buf.extend_from_slice(&min_out.to_le_bytes());
                 buf.extend_from_slice(&max_slippage_bp.to_le_bytes());
+            }
+            IntentConstraint::PhysicalResource {
+                resource_type,
+                location_prefix,
+                min_capacity,
+                max_price_per_unit,
+                duration_ticks,
+            } => {
+                buf.push(2);
+                buf.push(resource_type.tag_byte());
+                buf.extend_from_slice(location_prefix.as_bytes());
+                buf.extend_from_slice(&min_capacity.to_le_bytes());
+                buf.extend_from_slice(&max_price_per_unit.to_le_bytes());
+                buf.extend_from_slice(&duration_ticks.to_le_bytes());
             }
         }
         buf.extend_from_slice(&self.solver_reward.to_le_bytes());
@@ -540,6 +664,8 @@ pub enum Signal {
     AgentRegistration(AgentRegistrationShift),
     Intent(IntentShift),
     IntentFill(IntentFillShift),
+    /// Experimental: a DePIN physical-state attestation from a publisher.
+    PhysicalAttestation(PhysicalAttestation),
     /// Gossip probe: timestamp of the sender, used to estimate network RTT.
     Ping { timestamp_ns: u64, nonce: u64 },
     /// Response to a gossip probe.
@@ -592,6 +718,7 @@ impl Signal {
             }
             Signal::Intent(s) => s.hash(),
             Signal::IntentFill(s) => s.hash(),
+            Signal::PhysicalAttestation(a) => a.hash(),
             Signal::Ping { timestamp_ns, nonce } | Signal::Pong { timestamp_ns, nonce } => {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(&timestamp_ns.to_le_bytes());
@@ -628,6 +755,7 @@ impl Signal {
             Signal::AgentRegistration(s) => s.timestamp_ns,
             Signal::Intent(s) => s.timestamp_ns,
             Signal::IntentFill(s) => s.timestamp_ns,
+            Signal::PhysicalAttestation(a) => a.timestamp_ns,
             Signal::Ping { timestamp_ns, .. } | Signal::Pong { timestamp_ns, .. } => *timestamp_ns,
             Signal::Certificate(c) => c.timestamp_ns,
             Signal::Auth { .. } => 0,

@@ -364,6 +364,7 @@ fn signal_name(signal: &Signal) -> &'static str {
         Signal::AgentRegistration(_) => "AgentRegistration",
         Signal::Intent(_) => "Intent",
         Signal::IntentFill(_) => "IntentFill",
+        Signal::PhysicalAttestation(_) => "PhysicalAttestation",
         Signal::Encrypted(_) => "Encrypted",
     }
 }

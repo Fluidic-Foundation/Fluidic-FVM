@@ -3,8 +3,8 @@ use crate::consensus::domain::{DomainPolicy, FeePolicy, StatefulOrdering};
 use crate::consensus::dag::{DagError, RejectionReason, ShiftStatus, VectorClockDag};
 use crate::crypto::{
     decrypt_signal, encrypt_signal, AccountId, AgentRegistrationShift, CommutativeShift,
-    EncryptedSignal, IntentConstraint, IntentFillShift, IntentShift, KeyPair, Signal, StakeShift,
-    StatefulShift,
+    EncryptedSignal, IntentConstraint, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation,
+    PhysicalResourceType, Signal, StakeShift, StatefulShift,
 };
 use crate::evm::{block_hash_for, evm_address_to_fluidic};
 use axum::{
@@ -30,6 +30,8 @@ pub fn api_router() -> Router<Arc<ApiState>> {
         .route("/api/intent/submit", post(submit_intent))
         .route("/api/intent/fill", post(submit_intent_fill))
         .route("/api/intents/open", get(get_open_intents))
+        .route("/api/physical/attest", post(submit_physical_attestation))
+        .route("/api/physical/attestations/open", get(get_open_physical_attestations))
         .route("/api/shift/encrypt", post(encrypt_shift))
         .route("/api/shift/submit-encrypted", post(submit_encrypted_shift))
         .route("/api/shift/commutative", post(submit_commutative))
@@ -72,6 +74,10 @@ struct StateResponse {
     stateful_applied: usize,
     evm_applied: usize,
     intents_matched: usize,
+    /// Experimental: physical attestations ingested since node start.
+    physical_attestations: usize,
+    /// Experimental: physical-state intents matched since node start.
+    physical_intents_matched: usize,
     pool_wave_account: String,
     pool_usdc_account: String,
 }
@@ -133,6 +139,8 @@ async fn get_state(
         stateful_applied: snap.stateful_applied,
         evm_applied: snap.evm_applied,
         intents_matched: snap.intents_matched,
+        physical_attestations: snap.physical_attestations_ingested,
+        physical_intents_matched: snap.physical_intents_matched,
         pool_wave_account: hex::encode(state.pool_wave_account.0),
         pool_usdc_account: hex::encode(state.pool_usdc_account.0),
     })
@@ -396,6 +404,35 @@ enum IntentConstraintRequest {
         min_out: String,
         max_slippage_bp: u64,
     },
+    PhysicalResource {
+        resource_type: PhysicalResourceTypeRequest,
+        location_prefix: String,
+        min_capacity: String,
+        max_price_per_unit: String,
+        duration_ticks: u64,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PhysicalResourceTypeRequest {
+    Storage,
+    Bandwidth,
+    Compute,
+    Energy,
+    Sensor,
+}
+
+impl From<PhysicalResourceTypeRequest> for PhysicalResourceType {
+    fn from(req: PhysicalResourceTypeRequest) -> Self {
+        match req {
+            PhysicalResourceTypeRequest::Storage => PhysicalResourceType::Storage,
+            PhysicalResourceTypeRequest::Bandwidth => PhysicalResourceType::Bandwidth,
+            PhysicalResourceTypeRequest::Compute => PhysicalResourceType::Compute,
+            PhysicalResourceTypeRequest::Energy => PhysicalResourceType::Energy,
+            PhysicalResourceTypeRequest::Sensor => PhysicalResourceType::Sensor,
+        }
+    }
 }
 
 impl IntentConstraintRequest {
@@ -418,6 +455,19 @@ impl IntentConstraintRequest {
                     .map_err(|e| (e, "invalid to_token".to_string()))?,
                 min_out: parse_u128(&min_out).map_err(|e| (e, "invalid min_out".to_string()))?,
                 max_slippage_bp,
+            }),
+            IntentConstraintRequest::PhysicalResource {
+                resource_type,
+                location_prefix,
+                min_capacity,
+                max_price_per_unit,
+                duration_ticks,
+            } => Ok(IntentConstraint::PhysicalResource {
+                resource_type: resource_type.into(),
+                location_prefix,
+                min_capacity: parse_u128(&min_capacity).map_err(|e| (e, "invalid min_capacity".to_string()))?,
+                max_price_per_unit: parse_u128(&max_price_per_unit).map_err(|e| (e, "invalid max_price_per_unit".to_string()))?,
+                duration_ticks,
             }),
         }
     }
@@ -546,6 +596,91 @@ async fn get_open_intents(State(state): State<Arc<ApiState>>) -> Json<serde_json
         })
         .collect();
     Json(serde_json::json!({ "intents": intents }))
+}
+
+#[derive(Deserialize)]
+struct PhysicalAttestationRequest {
+    publisher: String,
+    resource_type: PhysicalResourceTypeRequest,
+    location: String,
+    capacity: String,
+    price_per_unit: String,
+    available_until_tick: u64,
+    nonce: u64,
+    timestamp_ns: u64,
+    signature: String,
+}
+
+async fn submit_physical_attestation(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<PhysicalAttestationRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let publisher = parse_account(&req.publisher)
+        .map_err(|e| (e, "invalid publisher account".to_string()))?;
+    let capacity = parse_u128(&req.capacity)
+        .map_err(|e| (e, "invalid capacity".to_string()))?;
+    let price_per_unit = parse_u128(&req.price_per_unit)
+        .map_err(|e| (e, "invalid price_per_unit".to_string()))?;
+    let signature = hex::decode(&req.signature)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid signature hex".to_string()))?;
+
+    let attestation = PhysicalAttestation {
+        publisher,
+        attestation_id: [0u8; 32],
+        resource_type: req.resource_type.into(),
+        location: req.location,
+        capacity,
+        price_per_unit,
+        available_until_tick: req.available_until_tick,
+        nonce: req.nonce,
+        timestamp_ns: req.timestamp_ns,
+        signature,
+    };
+
+    let registry = state.key_registry();
+    if !attestation.verify(
+        registry
+            .get(&publisher)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unknown publisher".to_string()))?,
+    ) {
+        return Err((StatusCode::UNAUTHORIZED, "invalid publisher signature".to_string()));
+    }
+
+    let hash = attestation.hash();
+    state.broadcast_physical_attestation(attestation.clone());
+    state
+        .oscillator
+        .ingest(Signal::PhysicalAttestation(attestation), &registry)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("physical attestation ingest failed: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "queued",
+        "attestation_id": hex::encode(hash),
+    })))
+}
+
+async fn get_open_physical_attestations(State(state): State<Arc<ApiState>>) -> Json<serde_json::Value> {
+    let attestations: Vec<_> = state
+        .oscillator
+        .pending_physical_attestations
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "attestation_id": hex::encode(a.attestation_id),
+                "publisher": a.publisher.to_string(),
+                "resource_type": serde_json::to_value(&a.resource_type).unwrap_or(serde_json::Value::Null),
+                "location": &a.location,
+                "capacity": a.capacity.to_string(),
+                "price_per_unit": a.price_per_unit.to_string(),
+                "available_until_tick": a.available_until_tick,
+                "nonce": a.nonce,
+                "timestamp_ns": a.timestamp_ns,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "attestations": attestations }))
 }
 
 #[derive(Deserialize)]

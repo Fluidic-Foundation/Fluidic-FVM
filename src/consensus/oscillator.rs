@@ -6,8 +6,8 @@ use crate::consensus::dag::{DagError, RejectionProof, RejectionReason, ShiftStat
 use crate::consensus::domain::{DomainRegistry, StatefulOrdering};
 use crate::crypto::{
     AccountId, AgentRegistrationShift, CommutativeShift, DomainId, IntentConstraint, IntentFillShift,
-    IntentShift, KeyPair, PoolId, RegistrationShift, Signal, StakeShift, StatefulShift, TxHash,
-    VectorClock, DEFAULT_DEX_DOMAIN,
+    IntentShift, KeyPair, PhysicalAttestation, PoolId, RegistrationShift, Signal, StakeShift,
+    StatefulShift, TxHash, VectorClock, DEFAULT_DEX_DOMAIN,
 };
 use crate::evm::EvmPool;
 use crate::field::coordinates::Coordinate;
@@ -40,6 +40,10 @@ pub struct SynthesisResult {
     pub metabolic_burned: u128,
     /// Number of intents matched and settled this synthesis tick.
     pub intents_matched: usize,
+    /// Experimental: number of physical attestations ingested this synthesis tick.
+    pub physical_attestations_ingested: usize,
+    /// Experimental: number of physical-state intents matched this synthesis tick.
+    pub physical_intents_matched: usize,
     /// Average latency (ms) from first seen to finalized for stateful + EVM shifts.
     pub avg_latency_ms: f64,
     /// Shifts processed per second during this synthesis cycle.
@@ -77,6 +81,10 @@ pub struct Oscillator {
     pub pending_intents: Arc<Mutex<Vec<IntentShift>>>,
     /// Pending intent fills submitted by solvers.
     pub pending_intent_fills: Arc<Mutex<Vec<IntentFillShift>>>,
+    /// Experimental: pending physical-state attestations from DePIN nodes.
+    pub pending_physical_attestations: Arc<Mutex<Vec<PhysicalAttestation>>>,
+    /// Experimental: counter of physical attestations accepted since the last synthesis tick.
+    pub physical_attestations_ingested: AtomicU64,
     /// Optional operator keypair used to sign synthesis certificates.
     pub operator_keypair: Option<KeyPair>,
     /// Signed synthesis certificates indexed by tick.
@@ -109,6 +117,8 @@ impl Oscillator {
             pending_stateful: Arc::new(Mutex::new(Vec::new())),
             pending_intents: Arc::new(Mutex::new(Vec::new())),
             pending_intent_fills: Arc::new(Mutex::new(Vec::new())),
+            pending_physical_attestations: Arc::new(Mutex::new(Vec::new())),
+            physical_attestations_ingested: AtomicU64::new(0),
             seen_signatures: DashMap::new(),
             seen_nonces: DashMap::new(),
             metabolic_engine: Arc::new(MetabolicDecayEngine::new()),
@@ -321,6 +331,7 @@ impl Oscillator {
             }
             Signal::Intent(intent) => self.ingest_intent(intent, key_registry),
             Signal::IntentFill(fill) => self.ingest_intent_fill(fill, key_registry),
+            Signal::PhysicalAttestation(attestation) => self.ingest_physical_attestation(attestation, key_registry),
             Signal::Encrypted(_) => {
                 Err("encrypted signals must be decrypted before ingestion".to_string())
             }
@@ -498,6 +509,46 @@ impl Oscillator {
             return Err(format!("intent fill rejected: {}", e));
         }
         self.pending_intent_fills.lock().unwrap().push(fill);
+        Ok(())
+    }
+
+    /// Validate and queue a physical-state attestation from a DePIN node.
+    /// Experimental: this is the entry point for the causal physical-state
+    /// synthesis feature and is subject to change.
+    pub fn ingest_physical_attestation(
+        &self,
+        attestation: PhysicalAttestation,
+        key_registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> Result<(), String> {
+        let Some(publisher_pk) = key_registry.get(&attestation.publisher) else {
+            return Err(format!(
+                "physical attestation rejected: unknown publisher {}",
+                attestation.publisher
+            ));
+        };
+        if !attestation.verify(publisher_pk) {
+            return Err("physical attestation rejected: invalid publisher signature".to_string());
+        }
+        if let Err(e) = self.check_and_record_nonce(
+            attestation.publisher,
+            DomainId::default(),
+            attestation.nonce,
+        ) {
+            return Err(format!("physical attestation rejected: {}", e));
+        }
+        let tick = self.synthesis_tick.load(Ordering::SeqCst);
+        if attestation.available_until_tick <= tick {
+            return Err(format!(
+                "physical attestation rejected: available_until_tick {} is not in the future (current tick {})",
+                attestation.available_until_tick, tick
+            ));
+        }
+        self.pending_physical_attestations
+            .lock()
+            .unwrap()
+            .push(attestation);
+        self.physical_attestations_ingested
+            .fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -792,6 +843,7 @@ impl Oscillator {
                         true
                     }
                 }
+                IntentConstraint::PhysicalResource { .. } => false,
             };
 
             if settled {
@@ -817,6 +869,121 @@ impl Oscillator {
         if !unmatched_fills.is_empty() {
             self.pending_intent_fills.lock().unwrap().extend(unmatched_fills);
         }
+    }
+
+    /// Experimental: match physical-state intents against open DePIN attestations
+    /// and settle them atomically in the wave-field. Attestations are removed from
+    /// the pool once matched so they cannot be double-filled in this MVP.
+    fn process_physical_state(
+        &self,
+        tick: u64,
+        result: &mut SynthesisResult,
+    ) {
+        let intents: Vec<IntentShift> = self.pending_intents.lock().unwrap().drain(..).collect();
+        if intents.is_empty() {
+            result.physical_attestations_ingested =
+                self.physical_attestations_ingested.swap(0, Ordering::SeqCst) as usize;
+            return;
+        }
+
+        let attestations: Vec<PhysicalAttestation> = self
+            .pending_physical_attestations
+            .lock()
+            .unwrap()
+            .drain(..)
+            .collect();
+        let mut matched_attestation_indices = std::collections::HashSet::<usize>::new();
+        let mut unmatched_intents: Vec<IntentShift> = Vec::new();
+
+        let field = self.wave_field.lock().unwrap();
+
+        for intent in intents {
+            if tick > intent.deadline_tick {
+                tracing::trace!(
+                    "physical intent {} expired at tick {}",
+                    hex::encode(intent.intent_id),
+                    tick
+                );
+                continue;
+            }
+
+            let IntentConstraint::PhysicalResource {
+                resource_type,
+                location_prefix,
+                min_capacity,
+                max_price_per_unit,
+                duration_ticks,
+            } = &intent.constraint
+            else {
+                unmatched_intents.push(intent);
+                continue;
+            };
+
+            let match_idx = attestations.iter().enumerate().position(|(idx, att)| {
+                if matched_attestation_indices.contains(&idx) {
+                    return false;
+                }
+                att.resource_type == *resource_type
+                    && att.location.starts_with(location_prefix)
+                    && att.capacity >= *min_capacity
+                    && att.price_per_unit <= *max_price_per_unit
+                    && tick.saturating_add(*duration_ticks) <= att.available_until_tick
+            });
+
+            let Some(idx) = match_idx else {
+                unmatched_intents.push(intent);
+                continue;
+            };
+
+            let att = &attestations[idx];
+            let publisher = att.publisher;
+            let resource_payment = min_capacity
+                .saturating_mul(att.price_per_unit)
+                .saturating_mul(*duration_ticks as u128);
+            let owner_balance = field.account_balance_in_domain(intent.domain, intent.owner).units;
+            let required = intent.solver_reward.saturating_add(resource_payment);
+
+            if owner_balance < required {
+                unmatched_intents.push(intent);
+                continue;
+            }
+
+            // owner -> publisher: solver reward
+            field.debit_account_in_domain(intent.domain, intent.owner, intent.solver_reward);
+            field.credit_account_in_domain(intent.domain, publisher, intent.solver_reward);
+            // owner -> publisher: resource payment
+            field.debit_account_in_domain(intent.domain, intent.owner, resource_payment);
+            field.credit_account_in_domain(intent.domain, publisher, resource_payment);
+            field.mark_active_in_domain(intent.domain, intent.owner, tick);
+            field.mark_active_in_domain(intent.domain, publisher, tick);
+
+            matched_attestation_indices.insert(idx);
+            result.physical_intents_matched += 1;
+        }
+
+        drop(field);
+
+        // Remove matched attestations and re-queue the rest.
+        let mut remaining_attestations: Vec<PhysicalAttestation> = Vec::with_capacity(
+            attestations.len().saturating_sub(matched_attestation_indices.len()));
+        for (idx, att) in attestations.into_iter().enumerate() {
+            if matched_attestation_indices.contains(&idx) {
+                continue;
+            }
+            remaining_attestations.push(att);
+        }
+        if !remaining_attestations.is_empty() {
+            self.pending_physical_attestations
+                .lock()
+                .unwrap()
+                .extend(remaining_attestations);
+        }
+        if !unmatched_intents.is_empty() {
+            self.pending_intents.lock().unwrap().extend(unmatched_intents);
+        }
+
+        result.physical_attestations_ingested =
+            self.physical_attestations_ingested.swap(0, Ordering::SeqCst) as usize;
     }
 
     /// Synthesize all pending commutative deltas via NTT and apply stateful
@@ -1192,7 +1359,10 @@ impl Oscillator {
             result.final_balances = simulated_balances.clone();
         }
 
-        // 3c. Match and settle intents atomically using the latest balances.
+        // 3c. Match and settle physical-state intents atomically using the latest balances.
+        self.process_physical_state(tick, &mut result);
+
+        // 3d. Match and settle financial intents atomically using the latest balances.
         self.process_intents(tick, &mut result);
 
         // 4. Optionally sign a synthesis certificate if the operator is staked.
