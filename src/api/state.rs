@@ -35,9 +35,9 @@ pub struct StateSnapshot {
     pub stateful_applied: usize,
     pub evm_applied: usize,
     pub intents_matched: usize,
-    /// Experimental: physical attestations ingested since the last snapshot.
+    /// Physical attestations ingested since the last snapshot.
     pub physical_attestations_ingested: usize,
-    /// Experimental: physical-state intents matched since the last snapshot.
+    /// Physical-state intents matched since the last snapshot.
     pub physical_intents_matched: usize,
     pub accounts: HashMap<String, u128>,
 }
@@ -48,9 +48,9 @@ pub struct SynthesisStats {
     pub stateful_applied: usize,
     pub evm_applied: usize,
     pub intents_matched: usize,
-    /// Experimental: physical attestations ingested since the last snapshot.
+    /// Physical attestations ingested since the last snapshot.
     pub physical_attestations_ingested: usize,
-    /// Experimental: physical-state intents matched since the last snapshot.
+    /// Physical-state intents matched since the last snapshot.
     pub physical_intents_matched: usize,
     pub avg_latency_ms: f64,
     pub throughput_per_sec: f64,
@@ -197,7 +197,7 @@ impl ApiState {
         }
     }
 
-    /// Experimental: broadcast a physical-state attestation to mesh peers.
+    /// Broadcast a physical-state attestation to mesh peers.
     pub fn broadcast_physical_attestation(&self, attestation: PhysicalAttestation) {
         if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
             let sender = sender.clone();

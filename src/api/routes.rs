@@ -32,6 +32,7 @@ pub fn api_router() -> Router<Arc<ApiState>> {
         .route("/api/intents/open", get(get_open_intents))
         .route("/api/physical/attest", post(submit_physical_attestation))
         .route("/api/physical/attestations/open", get(get_open_physical_attestations))
+        .route("/api/physical/attestations/:id", get(get_physical_attestation))
         .route("/api/shift/encrypt", post(encrypt_shift))
         .route("/api/shift/submit-encrypted", post(submit_encrypted_shift))
         .route("/api/shift/commutative", post(submit_commutative))
@@ -74,9 +75,9 @@ struct StateResponse {
     stateful_applied: usize,
     evm_applied: usize,
     intents_matched: usize,
-    /// Experimental: physical attestations ingested since node start.
+    /// Count of open physical attestations.
     physical_attestations: usize,
-    /// Experimental: physical-state intents matched since node start.
+    /// Physical-state intents matched since node start.
     physical_intents_matched: usize,
     pool_wave_account: String,
     pool_usdc_account: String,
@@ -128,6 +129,12 @@ async fn get_state(
     wait_for_min_tick(&state, query.min_tick).await;
 
     let snap = state.snapshot();
+    let open_attestations = state
+        .oscillator
+        .pending_physical_attestations
+        .lock()
+        .unwrap()
+        .len();
     Json(StateResponse {
         wave_reserve: snap.wave_reserve.to_string(),
         usdc_reserve: snap.usdc_reserve.to_string(),
@@ -139,7 +146,7 @@ async fn get_state(
         stateful_applied: snap.stateful_applied,
         evm_applied: snap.evm_applied,
         intents_matched: snap.intents_matched,
-        physical_attestations: snap.physical_attestations_ingested,
+        physical_attestations: open_attestations,
         physical_intents_matched: snap.physical_intents_matched,
         pool_wave_account: hex::encode(state.pool_wave_account.0),
         pool_usdc_account: hex::encode(state.pool_usdc_account.0),
@@ -666,13 +673,15 @@ async fn get_open_physical_attestations(State(state): State<Arc<ApiState>>) -> J
         .lock()
         .unwrap()
         .iter()
-        .map(|a| {
+        .map(|pending| {
+            let a = &pending.attestation;
             serde_json::json!({
                 "attestation_id": hex::encode(a.attestation_id),
                 "publisher": a.publisher.to_string(),
                 "resource_type": serde_json::to_value(&a.resource_type).unwrap_or(serde_json::Value::Null),
                 "location": &a.location,
                 "capacity": a.capacity.to_string(),
+                "remaining_capacity": pending.remaining_capacity.to_string(),
                 "price_per_unit": a.price_per_unit.to_string(),
                 "available_until_tick": a.available_until_tick,
                 "nonce": a.nonce,
@@ -681,6 +690,37 @@ async fn get_open_physical_attestations(State(state): State<Arc<ApiState>>) -> J
         })
         .collect();
     Json(serde_json::json!({ "attestations": attestations }))
+}
+
+async fn get_physical_attestation(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let bytes = hex::decode(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if bytes.len() != 32 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&bytes);
+
+    let guard = state.oscillator.pending_physical_attestations.lock().unwrap();
+    let pending = guard
+        .iter()
+        .find(|p| p.attestation.attestation_id == hash)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let a = &pending.attestation;
+    Ok(Json(serde_json::json!({
+        "attestation_id": hex::encode(a.attestation_id),
+        "publisher": a.publisher.to_string(),
+        "resource_type": serde_json::to_value(&a.resource_type).unwrap_or(serde_json::Value::Null),
+        "location": &a.location,
+        "capacity": a.capacity.to_string(),
+        "remaining_capacity": pending.remaining_capacity.to_string(),
+        "price_per_unit": a.price_per_unit.to_string(),
+        "available_until_tick": a.available_until_tick,
+        "nonce": a.nonce,
+        "timestamp_ns": a.timestamp_ns,
+    })))
 }
 
 #[derive(Deserialize)]

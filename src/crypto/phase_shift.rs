@@ -304,7 +304,7 @@ impl StakeShift {
     }
 }
 
-/// Experimental: a class of real-world resource that a DePIN node can attest.
+/// A class of real-world resource that a DePIN node can attest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PhysicalResourceType {
@@ -327,7 +327,7 @@ impl PhysicalResourceType {
     }
 }
 
-/// Experimental: a signed physical-state attestation published by a DePIN node.
+/// A signed physical-state attestation published by a DePIN node.
 /// The publisher commits to having a real-world resource available for a number
 /// of synthesis ticks, at a per-unit price paid in WAVE sub-units.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -419,7 +419,7 @@ pub enum IntentConstraint {
         min_out: u128,
         max_slippage_bp: u64,
     },
-    /// Experimental: request a physical resource from a DePIN attestation.
+    /// Request a physical resource from a DePIN attestation.
     PhysicalResource {
         resource_type: PhysicalResourceType,
         location_prefix: String,
@@ -664,7 +664,7 @@ pub enum Signal {
     AgentRegistration(AgentRegistrationShift),
     Intent(IntentShift),
     IntentFill(IntentFillShift),
-    /// Experimental: a DePIN physical-state attestation from a publisher.
+    /// A DePIN physical-state attestation from a publisher.
     PhysicalAttestation(PhysicalAttestation),
     /// Gossip probe: timestamp of the sender, used to estimate network RTT.
     Ping { timestamp_ns: u64, nonce: u64 },

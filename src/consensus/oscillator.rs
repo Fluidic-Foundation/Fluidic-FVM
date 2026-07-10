@@ -40,9 +40,9 @@ pub struct SynthesisResult {
     pub metabolic_burned: u128,
     /// Number of intents matched and settled this synthesis tick.
     pub intents_matched: usize,
-    /// Experimental: number of physical attestations ingested this synthesis tick.
+    /// Number of physical attestations ingested this synthesis tick.
     pub physical_attestations_ingested: usize,
-    /// Experimental: number of physical-state intents matched this synthesis tick.
+    /// Number of physical-state intents matched this synthesis tick.
     pub physical_intents_matched: usize,
     /// Average latency (ms) from first seen to finalized for stateful + EVM shifts.
     pub avg_latency_ms: f64,
@@ -81,9 +81,9 @@ pub struct Oscillator {
     pub pending_intents: Arc<Mutex<Vec<IntentShift>>>,
     /// Pending intent fills submitted by solvers.
     pub pending_intent_fills: Arc<Mutex<Vec<IntentFillShift>>>,
-    /// Experimental: pending physical-state attestations from DePIN nodes.
-    pub pending_physical_attestations: Arc<Mutex<Vec<PhysicalAttestation>>>,
-    /// Experimental: counter of physical attestations accepted since the last synthesis tick.
+    /// Pending physical-state attestations from DePIN nodes.
+    pub pending_physical_attestations: Arc<Mutex<Vec<PendingPhysicalAttestation>>>,
+    /// Counter of physical attestations accepted since the last synthesis tick.
     pub physical_attestations_ingested: AtomicU64,
     /// Optional operator keypair used to sign synthesis certificates.
     pub operator_keypair: Option<KeyPair>,
@@ -99,6 +99,57 @@ pub struct Oscillator {
     pub evm_pool: Arc<Mutex<EvmPool>>,
     /// Tracks circulating and burned WAVE supply.
     pub supply_tracker: Arc<SupplyTracker>,
+}
+
+/// A physical-state attestation held in the oscillator's pending pool, tracking
+/// how much capacity is still available for matching.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingPhysicalAttestation {
+    pub attestation: PhysicalAttestation,
+    pub remaining_capacity: u128,
+}
+
+impl PendingPhysicalAttestation {
+    pub fn new(attestation: PhysicalAttestation) -> Self {
+        let remaining_capacity = attestation.capacity;
+        Self {
+            attestation,
+            remaining_capacity,
+        }
+    }
+}
+
+/// Returns true when `location` satisfies the segment-aware `location_prefix`.
+/// The prefix matches if it is exactly the location, or if the location starts
+/// with the prefix and the next character is a slash (`/`). This keeps
+/// location matching simple while preventing partial-segment matches such as
+/// "eu" matching "eu-west/amsterdam".
+pub fn location_matches(location: &str, prefix: &str) -> bool {
+    if location == prefix {
+        return true;
+    }
+    if let Some(rest) = location.strip_prefix(prefix) {
+        return rest.starts_with('/');
+    }
+    false
+}
+
+/// Validate that a location or location_prefix string uses printable ASCII and
+/// has no leading or trailing slash.
+pub fn validate_location_string(s: &str, field_name: &str) -> Result<(), String> {
+    if s.is_empty() {
+        return Err(format!("{} must not be empty", field_name));
+    }
+    if s.starts_with('/') {
+        return Err(format!("{} must not start with a slash", field_name));
+    }
+    if s.ends_with('/') {
+        return Err(format!("{} must not end with a slash", field_name));
+    }
+    if !s.bytes().all(|b| b.is_ascii_graphic() || b == b'/' || b == b' ' || b == b'-') {
+        return Err(format!("{} must contain only printable ASCII characters", field_name));
+    }
+    Ok(())
 }
 
 impl Oscillator {
@@ -467,6 +518,9 @@ impl Oscillator {
                 intent.deadline_tick, tick
             ));
         }
+        if let IntentConstraint::PhysicalResource { location_prefix, .. } = &intent.constraint {
+            validate_location_string(location_prefix, "location_prefix")?;
+        }
         // Ensure the owner can cover the solver reward plus the small submission
         // fee. The fee is burned/redistributed immediately to prevent spam and
         // pay for matching compute, while keeping agentic use cheap.
@@ -513,8 +567,6 @@ impl Oscillator {
     }
 
     /// Validate and queue a physical-state attestation from a DePIN node.
-    /// Experimental: this is the entry point for the causal physical-state
-    /// synthesis feature and is subject to change.
     pub fn ingest_physical_attestation(
         &self,
         attestation: PhysicalAttestation,
@@ -543,10 +595,11 @@ impl Oscillator {
                 attestation.available_until_tick, tick
             ));
         }
+        validate_location_string(&attestation.location, "location")?;
         self.pending_physical_attestations
             .lock()
             .unwrap()
-            .push(attestation);
+            .push(PendingPhysicalAttestation::new(attestation));
         self.physical_attestations_ingested
             .fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -871,9 +924,9 @@ impl Oscillator {
         }
     }
 
-    /// Experimental: match physical-state intents against open DePIN attestations
-    /// and settle them atomically in the wave-field. Attestations are removed from
-    /// the pool once matched so they cannot be double-filled in this MVP.
+    /// Match physical-state intents against open DePIN attestations and settle
+    /// them atomically in the wave-field. Capacity is consumed partially: an
+    /// attestation stays in the pool until its remaining capacity reaches zero.
     fn process_physical_state(
         &self,
         tick: u64,
@@ -886,16 +939,22 @@ impl Oscillator {
             return;
         }
 
-        let attestations: Vec<PhysicalAttestation> = self
+        // Prune expired attestations before matching.
+        let attestations: Vec<PendingPhysicalAttestation> = self
             .pending_physical_attestations
             .lock()
             .unwrap()
             .drain(..)
+            .filter(|pending| pending.attestation.available_until_tick > tick)
             .collect();
-        let mut matched_attestation_indices = std::collections::HashSet::<usize>::new();
+
         let mut unmatched_intents: Vec<IntentShift> = Vec::new();
 
         let field = self.wave_field.lock().unwrap();
+
+        // Mutable matching state indexed by attestation position in `attestations`.
+        let mut remaining_capacity: Vec<u128> =
+            attestations.iter().map(|p| p.remaining_capacity).collect();
 
         for intent in intents {
             if tick > intent.deadline_tick {
@@ -919,13 +978,11 @@ impl Oscillator {
                 continue;
             };
 
-            let match_idx = attestations.iter().enumerate().position(|(idx, att)| {
-                if matched_attestation_indices.contains(&idx) {
-                    return false;
-                }
-                att.resource_type == *resource_type
-                    && att.location.starts_with(location_prefix)
-                    && att.capacity >= *min_capacity
+            let match_idx = attestations.iter().enumerate().position(|(idx, pending)| {
+                let att = &pending.attestation;
+                remaining_capacity[idx] >= *min_capacity
+                    && att.resource_type == *resource_type
+                    && location_matches(&att.location, location_prefix)
                     && att.price_per_unit <= *max_price_per_unit
                     && tick.saturating_add(*duration_ticks) <= att.available_until_tick
             });
@@ -935,7 +992,7 @@ impl Oscillator {
                 continue;
             };
 
-            let att = &attestations[idx];
+            let att = &attestations[idx].attestation;
             let publisher = att.publisher;
             let resource_payment = min_capacity
                 .saturating_mul(att.price_per_unit)
@@ -956,22 +1013,24 @@ impl Oscillator {
             field.credit_account_in_domain(intent.domain, publisher, resource_payment);
             field.mark_active_in_domain(intent.domain, intent.owner, tick);
             field.mark_active_in_domain(intent.domain, publisher, tick);
+            field.adjust_reputation_in_domain(intent.domain, publisher, 1);
 
-            matched_attestation_indices.insert(idx);
+            remaining_capacity[idx] -= *min_capacity;
             result.physical_intents_matched += 1;
         }
 
         drop(field);
 
-        // Remove matched attestations and re-queue the rest.
-        let mut remaining_attestations: Vec<PhysicalAttestation> = Vec::with_capacity(
-            attestations.len().saturating_sub(matched_attestation_indices.len()));
-        for (idx, att) in attestations.into_iter().enumerate() {
-            if matched_attestation_indices.contains(&idx) {
-                continue;
-            }
-            remaining_attestations.push(att);
-        }
+        // Return attestations that still have remaining capacity to the pool.
+        let remaining_attestations: Vec<PendingPhysicalAttestation> = attestations
+            .into_iter()
+            .zip(remaining_capacity.into_iter())
+            .filter(|(_, cap)| *cap > 0)
+            .map(|(mut pending, cap)| {
+                pending.remaining_capacity = cap;
+                pending
+            })
+            .collect();
         if !remaining_attestations.is_empty() {
             self.pending_physical_attestations
                 .lock()
