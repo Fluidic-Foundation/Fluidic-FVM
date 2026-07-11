@@ -129,4 +129,4 @@ src/
 
 ## License
 
-Buisness Source License 1.1
+Business Source License 1.1
