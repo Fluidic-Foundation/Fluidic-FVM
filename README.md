@@ -129,4 +129,4 @@ src/
 
 ## License
 
-MIT OR Apache-2.0
+Business Source License 1.1
