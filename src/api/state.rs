@@ -118,8 +118,10 @@ impl ApiState {
         // Seed the DEX pool.
         state.oscillator.seed_account(pool_wave_account, 100_000_000_000_000_000); // 100k WAVE
         state.oscillator.seed_account(pool_usdc_account, 100_000_000_000_000_000); // 100k USDC
-        // The pool's USDC reserve is foreign value and must not decay.  (Its
-        // WAVE reserve decays as WAVE monetary policy.)
+        // Both pool reserves are protocol liquidity, not circulating user balances,
+        // so they must be exempt from metabolic decay. Otherwise the WAVE reserve
+        // shrinks over time and the pool price drifts to infinity.
+        state.oscillator.mark_non_decaying(pool_wave_account);
         state.oscillator.mark_non_decaying(pool_usdc_account);
 
         // Register pool accounts so their signed shifts verify in the DAG.
