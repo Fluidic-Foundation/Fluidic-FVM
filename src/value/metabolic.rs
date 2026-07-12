@@ -13,15 +13,15 @@ pub const BASIS_POINTS_DENOMINATOR: u64 = 10_000;
 pub const DECAY_DENOMINATOR: u64 = 1_000_000;
 
 /// Default exponential decay constant λ for the built-in DEX domain, expressed
-/// in parts-per-million per synthesis tick.  A value of `20` means each tick a
-/// balance retains `e^(-20 / 1_000_000) ≈ 99.998%` of its value, i.e. about
-/// 0.002% decays away per tick.
-pub const DEFAULT_DEX_LAMBDA_PPM: u64 = 20;
+/// in parts-per-million per synthesis tick.  Calibrated for the default
+/// 100 ms tick interval: λ = 2 ppm/tick gives the same per-second decay as the
+/// previous 1000 ms interval's 20 ppm/tick, i.e. about 0.002% per second.
+pub const DEFAULT_DEX_LAMBDA_PPM: u64 = 2;
 
 /// Number of ticks of activity grace: an account that transacted within this
 /// many ticks of the current synthesis tick is exempt from metabolic decay.
-/// At ~1 tick/second this is a ~4 hour window.
-pub const METABOLIC_IDLE_GRACE_TICKS: u64 = 4 * 60 * 60;
+/// At the default 100 ms tick interval this is a ~4 hour window.
+pub const METABOLIC_IDLE_GRACE_TICKS: u64 = 4 * 60 * 60 * 10;
 
 /// Fraction of each tick's metabolically-decayed value that is *permanently
 /// burned* (removed from supply) rather than redistributed.  Expressed in basis
