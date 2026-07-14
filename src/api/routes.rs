@@ -51,6 +51,7 @@ pub fn api_router() -> Router<Arc<ApiState>> {
         .route("/api/rewards/claim", post(claim_operator_rewards))
         .route("/api/rewards/lp/:pool_id/claim", post(claim_lp_rewards))
         .route("/api/supply", get(get_supply))
+        .route("/api/debug/burn", get(debug_burn))
         .route("/api/domains", get(get_domains).post(register_domain))
         .route("/api/domain/:id", get(get_domain))
         .route("/api/evm/faucet", post(evm_faucet))
@@ -1280,6 +1281,73 @@ async fn get_supply(
         "circulating": state.oscillator.supply_tracker.circulating().to_string(),
         "burned": state.oscillator.supply_tracker.burned().to_string(),
         "remaining": state.oscillator.supply_tracker.remaining().to_string(),
+    }))
+}
+
+/// Debug endpoint: break down where metabolic burn is coming from.
+async fn debug_burn(State(state): State<Arc<ApiState>>) -> Json<serde_json::Value> {
+    let immune_accounts: std::collections::HashSet<crate::crypto::AccountId> = state
+        .oscillator
+        .stake_table
+        .staked_operators()
+        .into_iter()
+        .map(|(operator, _)| operator)
+        .collect();
+
+    let mut total_accounts = 0u64;
+    let mut total_wave_units = 0u128;
+    let mut immune_wave_units = 0u128;
+    let mut non_decaying_wave_units = 0u128;
+    let mut decayable_wave_units = 0u128;
+    let mut decayable_accounts = 0u64;
+    let mut account_summaries: Vec<serde_json::Value> = Vec::new();
+
+    let field = state.oscillator.wave_field.lock().unwrap();
+    for domain_entry in field.domains.iter() {
+        for entry in domain_entry.value().accounts.iter() {
+            total_accounts += 1;
+            let id = *entry.key();
+            let balance = &entry.value().balance;
+            if !balance.decays {
+                non_decaying_wave_units += balance.units;
+                continue;
+            }
+            total_wave_units += balance.units;
+            if immune_accounts.contains(&id) {
+                immune_wave_units += balance.units;
+                continue;
+            }
+            decayable_wave_units += balance.units;
+            decayable_accounts += 1;
+            account_summaries.push(serde_json::json!({
+                "account": hex::encode(id.0),
+                "domain": hex::encode(*domain_entry.key()),
+                "wave_units": balance.units.to_string(),
+                "last_active_tick": balance.last_active_tick,
+                "last_decay_tick": balance.last_decay_tick,
+            }));
+        }
+    }
+
+    // Sort decayable accounts by balance descending and take top 50.
+    account_summaries.sort_by(|a, b| {
+        let a_units = a["wave_units"].as_str().unwrap_or("0").parse::<u128>().unwrap_or(0);
+        let b_units = b["wave_units"].as_str().unwrap_or("0").parse::<u128>().unwrap_or(0);
+        b_units.cmp(&a_units)
+    });
+    account_summaries.truncate(50);
+
+    Json(serde_json::json!({
+        "total_accounts": total_accounts,
+        "total_wave_units": total_wave_units.to_string(),
+        "immune_wave_units": immune_wave_units.to_string(),
+        "non_decaying_wave_units": non_decaying_wave_units.to_string(),
+        "decayable_wave_units": decayable_wave_units.to_string(),
+        "decayable_accounts": decayable_accounts,
+        "immune_account_count": immune_accounts.len(),
+        "metabolic_burned": state.oscillator.metabolic_engine.total_burned().to_string(),
+        "supply_burned": state.oscillator.supply_tracker.burned().to_string(),
+        "top_decayable_accounts": account_summaries,
     }))
 }
 
