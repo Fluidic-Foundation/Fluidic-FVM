@@ -365,6 +365,9 @@ fn signal_name(signal: &Signal) -> &'static str {
         Signal::Intent(_) => "Intent",
         Signal::IntentFill(_) => "IntentFill",
         Signal::PhysicalAttestation(_) => "PhysicalAttestation",
+        Signal::EntanglementCreate(_) => "EntanglementCreate",
+        Signal::EntanglementAttest(_) => "EntanglementAttest",
+        Signal::EntanglementBreak(_) => "EntanglementBreak",
         Signal::Encrypted(_) => "Encrypted",
     }
 }

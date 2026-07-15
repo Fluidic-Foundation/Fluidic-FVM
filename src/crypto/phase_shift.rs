@@ -593,6 +593,215 @@ impl IntentFillShift {
     }
 }
 
+/// 32-byte identifier for a Causal Agent Entanglement contract.
+pub type EntanglementId = [u8; 32];
+
+/// A Causal Agent Entanglement (CAE) contract.
+///
+/// The `subject` account may only execute stateful spends while this
+/// entanglement is active if at least `threshold` of the `witnesses` have
+/// submitted an attestation in a prior synthesis tick.  This lets autonomous
+/// agents form trustless, causally-enforced relationships: e.g. "Agent B may
+/// spend WAVE only after Agent A has attested".
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntanglementContract {
+    pub id: EntanglementId,
+    pub creator: AccountId,
+    pub subject: AccountId,
+    pub witnesses: Vec<AccountId>,
+    pub threshold: usize,
+    pub expiry_tick: u64,
+    pub created_tick: u64,
+}
+
+/// Create a new entanglement contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntanglementCreateShift {
+    pub id: EntanglementId,
+    pub creator: AccountId,
+    pub subject: AccountId,
+    pub witnesses: Vec<AccountId>,
+    pub threshold: usize,
+    pub expiry_tick: u64,
+    pub nonce: u64,
+    pub timestamp_ns: u64,
+    pub signature: Vec<u8>,
+}
+
+impl EntanglementCreateShift {
+    pub fn new(
+        creator_keypair: &KeyPair,
+        subject: AccountId,
+        witnesses: Vec<AccountId>,
+        threshold: usize,
+        expiry_tick: u64,
+        nonce: u64,
+        timestamp_ns: u64,
+    ) -> Self {
+        let creator = creator_keypair.account_id();
+        let id = Self::recompute_id(creator, subject, &witnesses, threshold, expiry_tick, nonce, timestamp_ns);
+
+        let mut shift = Self {
+            id,
+            creator,
+            subject,
+            witnesses,
+            threshold,
+            expiry_tick,
+            nonce,
+            timestamp_ns,
+            signature: Vec::new(),
+        };
+        let sig = creator_keypair.sign(&shift.signing_bytes());
+        shift.signature = sig.to_bytes().to_vec();
+        shift
+    }
+
+    /// Deterministic contract id computation, exposed so nodes can recompute and
+    /// verify the id supplied by a creator.
+    pub fn recompute_id(
+        creator: AccountId,
+        subject: AccountId,
+        witnesses: &[AccountId],
+        threshold: usize,
+        expiry_tick: u64,
+        nonce: u64,
+        timestamp_ns: u64,
+    ) -> EntanglementId {
+        let mut id = [0u8; 32];
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"FLUIDIC:ENTANGLEMENT:v1");
+        hasher.update(creator.as_bytes());
+        hasher.update(subject.as_bytes());
+        for w in witnesses {
+            hasher.update(w.as_bytes());
+        }
+        hasher.update(&threshold.to_le_bytes());
+        hasher.update(&expiry_tick.to_le_bytes());
+        hasher.update(&nonce.to_le_bytes());
+        hasher.update(&timestamp_ns.to_le_bytes());
+        id.copy_from_slice(hasher.finalize().as_bytes());
+        id
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(b"FLUIDIC:ENTANGLEMENT_CREATE:v1");
+        buf.extend_from_slice(self.creator.as_bytes());
+        buf.extend_from_slice(self.subject.as_bytes());
+        for w in &self.witnesses {
+            buf.extend_from_slice(w.as_bytes());
+        }
+        buf.extend_from_slice(&self.threshold.to_le_bytes());
+        buf.extend_from_slice(&self.expiry_tick.to_le_bytes());
+        buf.extend_from_slice(&self.nonce.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf
+    }
+
+    pub fn verify(&self, public_key: &ed25519_dalek::VerifyingKey) -> bool {
+        let Ok(sig) = ed25519_dalek::Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        if !KeyPair::verify(public_key, &self.signing_bytes(), &sig) {
+            return false;
+        }
+        AccountId::from_public_key(public_key) == self.creator
+    }
+}
+
+/// Witness attestation for an entanglement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntanglementAttestShift {
+    pub entanglement_id: EntanglementId,
+    pub witness: AccountId,
+    pub nonce: u64,
+    pub timestamp_ns: u64,
+    pub signature: Vec<u8>,
+}
+
+impl EntanglementAttestShift {
+    pub fn new(witness_keypair: &KeyPair, entanglement_id: EntanglementId, nonce: u64, timestamp_ns: u64) -> Self {
+        let witness = witness_keypair.account_id();
+        let mut shift = Self {
+            entanglement_id,
+            witness,
+            nonce,
+            timestamp_ns,
+            signature: Vec::new(),
+        };
+        let sig = witness_keypair.sign(&shift.signing_bytes());
+        shift.signature = sig.to_bytes().to_vec();
+        shift
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(128);
+        buf.extend_from_slice(b"FLUIDIC:ENTANGLEMENT_ATTEST:v1");
+        buf.extend_from_slice(&self.entanglement_id);
+        buf.extend_from_slice(self.witness.as_bytes());
+        buf.extend_from_slice(&self.nonce.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf
+    }
+
+    pub fn verify(&self, public_key: &ed25519_dalek::VerifyingKey) -> bool {
+        let Ok(sig) = ed25519_dalek::Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        if !KeyPair::verify(public_key, &self.signing_bytes(), &sig) {
+            return false;
+        }
+        AccountId::from_public_key(public_key) == self.witness
+    }
+}
+
+/// Break / revoke an entanglement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntanglementBreakShift {
+    pub entanglement_id: EntanglementId,
+    pub breaker: AccountId,
+    pub nonce: u64,
+    pub timestamp_ns: u64,
+    pub signature: Vec<u8>,
+}
+
+impl EntanglementBreakShift {
+    pub fn new(breaker_keypair: &KeyPair, entanglement_id: EntanglementId, nonce: u64, timestamp_ns: u64) -> Self {
+        let breaker = breaker_keypair.account_id();
+        let mut shift = Self {
+            entanglement_id,
+            breaker,
+            nonce,
+            timestamp_ns,
+            signature: Vec::new(),
+        };
+        let sig = breaker_keypair.sign(&shift.signing_bytes());
+        shift.signature = sig.to_bytes().to_vec();
+        shift
+    }
+
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(128);
+        buf.extend_from_slice(b"FLUIDIC:ENTANGLEMENT_BREAK:v1");
+        buf.extend_from_slice(&self.entanglement_id);
+        buf.extend_from_slice(self.breaker.as_bytes());
+        buf.extend_from_slice(&self.nonce.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf
+    }
+
+    pub fn verify(&self, public_key: &ed25519_dalek::VerifyingKey) -> bool {
+        let Ok(sig) = ed25519_dalek::Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        if !KeyPair::verify(public_key, &self.signing_bytes(), &sig) {
+            return false;
+        }
+        AccountId::from_public_key(public_key) == self.breaker
+    }
+}
+
 /// Registers an agent account controlled by an owner.  The owner delegates
 /// limited authority to the agent key; the agent can sign shifts on the
 /// owner's behalf until `expiry_tick`.
@@ -664,6 +873,9 @@ pub enum Signal {
     AgentRegistration(AgentRegistrationShift),
     Intent(IntentShift),
     IntentFill(IntentFillShift),
+    EntanglementCreate(EntanglementCreateShift),
+    EntanglementAttest(EntanglementAttestShift),
+    EntanglementBreak(EntanglementBreakShift),
     /// A DePIN physical-state attestation from a publisher.
     PhysicalAttestation(PhysicalAttestation),
     /// Gossip probe: timestamp of the sender, used to estimate network RTT.
@@ -716,6 +928,25 @@ impl Signal {
                 hasher.update(&s.timestamp_ns.to_le_bytes());
                 hasher.finalize().into()
             }
+            Signal::EntanglementCreate(s) => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(&s.id);
+                hasher.finalize().into()
+            }
+            Signal::EntanglementAttest(s) => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(&s.entanglement_id);
+                hasher.update(s.witness.as_bytes());
+                hasher.update(&s.nonce.to_le_bytes());
+                hasher.finalize().into()
+            }
+            Signal::EntanglementBreak(s) => {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(&s.entanglement_id);
+                hasher.update(s.breaker.as_bytes());
+                hasher.update(&s.nonce.to_le_bytes());
+                hasher.finalize().into()
+            }
             Signal::Intent(s) => s.hash(),
             Signal::IntentFill(s) => s.hash(),
             Signal::PhysicalAttestation(a) => a.hash(),
@@ -753,6 +984,9 @@ impl Signal {
             Signal::Registration(s) => s.timestamp_ns,
             Signal::Stake(s) => s.timestamp_ns,
             Signal::AgentRegistration(s) => s.timestamp_ns,
+            Signal::EntanglementCreate(s) => s.timestamp_ns,
+            Signal::EntanglementAttest(s) => s.timestamp_ns,
+            Signal::EntanglementBreak(s) => s.timestamp_ns,
             Signal::Intent(s) => s.timestamp_ns,
             Signal::IntentFill(s) => s.timestamp_ns,
             Signal::PhysicalAttestation(a) => a.timestamp_ns,

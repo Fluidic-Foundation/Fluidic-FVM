@@ -32,6 +32,8 @@ struct Snapshot {
     stake_config: Option<StakingConfig>,
     #[serde(default)]
     stake_table: BTreeMap<String, OperatorEntry>,
+    #[serde(default)]
+    entanglements: Vec<crate::crypto::EntanglementContract>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -198,9 +200,16 @@ pub fn save(osc: &Oscillator, path: impl AsRef<Path>) -> Result<(), String> {
 
     let stake_config = Some(osc.stake_table.config().clone());
     let stake_table = osc.stake_table.to_snapshot();
+    let entanglements: Vec<_> = osc
+        .entanglements
+        .read()
+        .map_err(|e| e.to_string())?
+        .values()
+        .cloned()
+        .collect();
 
     let snapshot = Snapshot {
-        version: 2,
+        version: 3,
         accounts,
         pools,
         dag_nodes,
@@ -211,6 +220,7 @@ pub fn save(osc: &Oscillator, path: impl AsRef<Path>) -> Result<(), String> {
         evm_statuses,
         stake_config,
         stake_table,
+        entanglements,
     };
 
     let tmp = path.with_extension("tmp");
@@ -233,9 +243,9 @@ pub fn load(osc: &mut Oscillator, path: impl AsRef<Path>) -> Result<(), String> 
     let json = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let snapshot: Snapshot = serde_json::from_str(&json).map_err(|e| e.to_string())?;
 
-    if snapshot.version != 2 {
+    if snapshot.version != 2 && snapshot.version != 3 {
         return Err(format!(
-            "unsupported snapshot version {} (expected 2)",
+            "unsupported snapshot version {} (expected 2 or 3)",
             snapshot.version
         ));
     }
@@ -378,6 +388,14 @@ pub fn load(osc: &mut Oscillator, path: impl AsRef<Path>) -> Result<(), String> 
         snapshot.stake_table,
     ));
 
+    {
+        let mut entanglements = osc.entanglements.write().map_err(|e| e.to_string())?;
+        entanglements.clear();
+        for contract in snapshot.entanglements {
+            entanglements.insert(contract.id, contract);
+        }
+    }
+
     Ok(())
 }
 
@@ -401,6 +419,7 @@ fn dag_error_code(err: &DagError) -> String {
         DagError::InsufficientBalance(_) => "insufficient_balance",
         DagError::DoubleSpend(_) => "double_spend",
         DagError::CausalCycle(_) => "causal_cycle",
+        DagError::EntanglementThresholdNotMet(_) => "entanglement_threshold_not_met",
     }
     .to_string()
 }
@@ -411,6 +430,7 @@ fn parse_dag_error(code: &str) -> DagError {
         "insufficient_balance" => DagError::InsufficientBalance([0u8; 32]),
         "double_spend" => DagError::DoubleSpend([0u8; 32]),
         "causal_cycle" => DagError::CausalCycle([0u8; 32]),
+        "entanglement_threshold_not_met" => DagError::EntanglementThresholdNotMet([0u8; 32]),
         _ => DagError::MissingPredecessor([0u8; 32]),
     }
 }

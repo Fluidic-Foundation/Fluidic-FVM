@@ -3,7 +3,8 @@ use crate::consensus::domain::{DomainPolicy, FeePolicy, StatefulOrdering};
 use crate::consensus::dag::{DagError, RejectionReason, ShiftStatus, VectorClockDag};
 use crate::crypto::{
     decrypt_signal, encrypt_signal, AccountId, AgentRegistrationShift, CommutativeShift,
-    EncryptedSignal, IntentConstraint, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation,
+    EncryptedSignal, EntanglementAttestShift, EntanglementBreakShift, EntanglementCreateShift,
+    IntentConstraint, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation,
     PhysicalResourceType, Signal, StakeShift, StatefulShift,
 };
 use crate::evm::{block_hash_for, evm_address_to_fluidic};
@@ -33,6 +34,11 @@ pub fn api_router() -> Router<Arc<ApiState>> {
         .route("/api/physical/attest", post(submit_physical_attestation))
         .route("/api/physical/attestations/open", get(get_open_physical_attestations))
         .route("/api/physical/attestations/:id", get(get_physical_attestation))
+        .route("/api/entanglement/create", post(create_entanglement))
+        .route("/api/entanglement/attest", post(attest_entanglement))
+        .route("/api/entanglement/break", post(break_entanglement))
+        .route("/api/entanglement/:id", get(get_entanglement))
+        .route("/api/entanglements/:account", get(get_account_entanglements))
         .route("/api/shift/encrypt", post(encrypt_shift))
         .route("/api/shift/submit-encrypted", post(submit_encrypted_shift))
         .route("/api/shift/commutative", post(submit_commutative))
@@ -722,6 +728,258 @@ async fn get_physical_attestation(
         "nonce": a.nonce,
         "timestamp_ns": a.timestamp_ns,
     })))
+}
+
+#[derive(Deserialize)]
+struct EntanglementCreateRequest {
+    id: String,
+    creator: String,
+    subject: String,
+    witnesses: Vec<String>,
+    threshold: usize,
+    expiry_tick: u64,
+    nonce: u64,
+    timestamp_ns: u64,
+    signature: String,
+}
+
+async fn create_entanglement(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<EntanglementCreateRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let id = parse_hash(&req.id).map_err(|e| (e, "invalid entanglement id".to_string()))?;
+    let creator = parse_account(&req.creator).map_err(|e| (e, "invalid creator account".to_string()))?;
+    let subject = parse_account(&req.subject).map_err(|e| (e, "invalid subject account".to_string()))?;
+    let witnesses: Vec<AccountId> = req
+        .witnesses
+        .iter()
+        .map(|h| parse_account(h).map_err(|e| (e, format!("invalid witness account: {}", h))))
+        .collect::<Result<_, _>>()?;
+    let signature = hex::decode(&req.signature)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid signature hex".to_string()))?;
+
+    let shift = EntanglementCreateShift {
+        id,
+        creator,
+        subject,
+        witnesses,
+        threshold: req.threshold,
+        expiry_tick: req.expiry_tick,
+        nonce: req.nonce,
+        timestamp_ns: req.timestamp_ns,
+        signature,
+    };
+
+    let registry = state.key_registry();
+    if !shift.verify(
+        registry
+            .get(&creator)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unknown creator".to_string()))?,
+    ) {
+        return Err((StatusCode::UNAUTHORIZED, "invalid creator signature".to_string()));
+    }
+
+    let recomputed = EntanglementCreateShift::recompute_id(
+        creator,
+        subject,
+        &shift.witnesses,
+        shift.threshold,
+        shift.expiry_tick,
+        shift.nonce,
+        shift.timestamp_ns,
+    );
+    if recomputed != id {
+        return Err((StatusCode::BAD_REQUEST, "entanglement id does not match recomputed id".to_string()));
+    }
+
+    state.broadcast_entanglement_create(shift.clone());
+    state
+        .oscillator
+        .ingest(Signal::EntanglementCreate(shift), &registry)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("entanglement create ingest failed: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "created",
+        "entanglement_id": hex::encode(id),
+    })))
+}
+
+#[derive(Deserialize)]
+struct EntanglementAttestRequest {
+    entanglement_id: String,
+    witness: String,
+    nonce: u64,
+    timestamp_ns: u64,
+    signature: String,
+}
+
+async fn attest_entanglement(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<EntanglementAttestRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let entanglement_id = parse_hash(&req.entanglement_id)
+        .map_err(|e| (e, "invalid entanglement_id".to_string()))?;
+    let witness = parse_account(&req.witness).map_err(|e| (e, "invalid witness account".to_string()))?;
+    let signature = hex::decode(&req.signature)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid signature hex".to_string()))?;
+
+    let shift = EntanglementAttestShift {
+        entanglement_id,
+        witness,
+        nonce: req.nonce,
+        timestamp_ns: req.timestamp_ns,
+        signature,
+    };
+
+    let registry = state.key_registry();
+    if !shift.verify(
+        registry
+            .get(&witness)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unknown witness".to_string()))?,
+    ) {
+        return Err((StatusCode::UNAUTHORIZED, "invalid witness signature".to_string()));
+    }
+
+    state.broadcast_entanglement_attest(shift.clone());
+    state
+        .oscillator
+        .ingest(Signal::EntanglementAttest(shift), &registry)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("entanglement attest ingest failed: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "attested",
+        "entanglement_id": hex::encode(entanglement_id),
+        "witness": witness.to_string(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct EntanglementBreakRequest {
+    entanglement_id: String,
+    breaker: String,
+    nonce: u64,
+    timestamp_ns: u64,
+    signature: String,
+}
+
+async fn break_entanglement(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<EntanglementBreakRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let entanglement_id = parse_hash(&req.entanglement_id)
+        .map_err(|e| (e, "invalid entanglement_id".to_string()))?;
+    let breaker = parse_account(&req.breaker).map_err(|e| (e, "invalid breaker account".to_string()))?;
+    let signature = hex::decode(&req.signature)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid signature hex".to_string()))?;
+
+    let shift = EntanglementBreakShift {
+        entanglement_id,
+        breaker,
+        nonce: req.nonce,
+        timestamp_ns: req.timestamp_ns,
+        signature,
+    };
+
+    let registry = state.key_registry();
+    if !shift.verify(
+        registry
+            .get(&breaker)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unknown breaker".to_string()))?,
+    ) {
+        return Err((StatusCode::UNAUTHORIZED, "invalid breaker signature".to_string()));
+    }
+
+    state.broadcast_entanglement_break(shift.clone());
+    state
+        .oscillator
+        .ingest(Signal::EntanglementBreak(shift), &registry)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("entanglement break ingest failed: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "broken",
+        "entanglement_id": hex::encode(entanglement_id),
+    })))
+}
+
+async fn get_entanglement(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let bytes = hex::decode(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if bytes.len() != 32 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut eid = [0u8; 32];
+    eid.copy_from_slice(&bytes);
+
+    let entanglements = state.oscillator.entanglements.read().unwrap();
+    let contract = entanglements.get(&eid).ok_or(StatusCode::NOT_FOUND)?;
+    let attestation_count = state
+        .oscillator
+        .entanglement_attestations
+        .read()
+        .unwrap()
+        .get(&eid)
+        .map(|s| s.len())
+        .unwrap_or(0);
+    let current_tick = state.oscillator.synthesis_tick.load(std::sync::atomic::Ordering::SeqCst);
+
+    Ok(Json(serde_json::json!({
+        "entanglement_id": hex::encode(contract.id),
+        "creator": contract.creator.to_string(),
+        "subject": contract.subject.to_string(),
+        "witnesses": contract.witnesses.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+        "threshold": contract.threshold,
+        "expiry_tick": contract.expiry_tick,
+        "created_tick": contract.created_tick,
+        "active": current_tick <= contract.expiry_tick,
+        "attestations_this_tick": attestation_count,
+    })))
+}
+
+async fn get_account_entanglements(
+    State(state): State<Arc<ApiState>>,
+    Path(account_hex): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let account = parse_account(&account_hex)?;
+    let current_tick = state.oscillator.synthesis_tick.load(std::sync::atomic::Ordering::SeqCst);
+
+    let items: Vec<serde_json::Value> = state
+        .oscillator
+        .entanglements
+        .read()
+        .unwrap()
+        .values()
+        .filter(|c| {
+            c.subject == account || c.creator == account || c.witnesses.contains(&account)
+        })
+        .map(|c| {
+            let attestation_count = state
+                .oscillator
+                .entanglement_attestations
+                .read()
+                .unwrap()
+                .get(&c.id)
+                .map(|s| s.len())
+                .unwrap_or(0);
+            serde_json::json!({
+                "entanglement_id": hex::encode(c.id),
+                "role": if c.subject == account { "subject" }
+                    else if c.creator == account { "creator" }
+                    else { "witness" },
+                "creator": c.creator.to_string(),
+                "subject": c.subject.to_string(),
+                "witnesses": c.witnesses.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                "threshold": c.threshold,
+                "expiry_tick": c.expiry_tick,
+                "created_tick": c.created_tick,
+                "active": current_tick <= c.expiry_tick,
+                "attestations_this_tick": attestation_count,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "entanglements": items })))
 }
 
 #[derive(Deserialize)]
@@ -1654,6 +1912,7 @@ fn dag_error_name(err: &DagError) -> &'static str {
         DagError::InsufficientBalance(_) => "insufficient_balance",
         DagError::DoubleSpend(_) => "double_spend",
         DagError::CausalCycle(_) => "causal_cycle",
+        DagError::EntanglementThresholdNotMet(_) => "entanglement_threshold_not_met",
     }
 }
 
@@ -1664,6 +1923,7 @@ fn rejection_reason_name(reason: &RejectionReason) -> String {
         RejectionReason::InsufficientBalance => "insufficient_balance".to_string(),
         RejectionReason::DoubleSpend => "double_spend".to_string(),
         RejectionReason::CausalCycle => "causal_cycle".to_string(),
+        RejectionReason::EntanglementThresholdNotMet => "entanglement_threshold_not_met".to_string(),
     }
 }
 

@@ -15,6 +15,9 @@ pub enum RejectionReason {
     DoubleSpend,
     /// The shift's predecessor graph contains a cycle.
     CausalCycle,
+    /// The shift's sender is the subject of an active Causal Agent Entanglement
+    /// and the required witness threshold was not met this tick.
+    EntanglementThresholdNotMet,
 }
 
 impl RejectionReason {
@@ -30,6 +33,7 @@ impl RejectionReason {
             Self::InsufficientBalance => vec![2],
             Self::DoubleSpend => vec![3],
             Self::CausalCycle => vec![4],
+            Self::EntanglementThresholdNotMet => vec![5],
         }
     }
 }
@@ -42,6 +46,7 @@ impl From<&DagError> for RejectionReason {
             DagError::InsufficientBalance(_) => Self::InsufficientBalance,
             DagError::DoubleSpend(_) => Self::DoubleSpend,
             DagError::CausalCycle(_) => Self::CausalCycle,
+            DagError::EntanglementThresholdNotMet(_) => Self::EntanglementThresholdNotMet,
         }
     }
 }
@@ -125,6 +130,7 @@ pub enum DagError {
     InsufficientBalance(TxHash),
     DoubleSpend(TxHash),
     CausalCycle(TxHash),
+    EntanglementThresholdNotMet(TxHash),
 }
 
 impl DagError {
@@ -135,7 +141,8 @@ impl DagError {
             | Self::InvalidSignature(h)
             | Self::InsufficientBalance(h)
             | Self::DoubleSpend(h)
-            | Self::CausalCycle(h) => *h,
+            | Self::CausalCycle(h)
+            | Self::EntanglementThresholdNotMet(h) => *h,
         }
     }
 }

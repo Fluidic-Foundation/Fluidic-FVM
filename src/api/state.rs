@@ -1,6 +1,7 @@
 use crate::consensus::{Oscillator, ShiftStatus, SynthesisResult};
 use crate::crypto::{
-    AccountId, AgentRegistrationShift, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation,
+    AccountId, AgentRegistrationShift, EntanglementAttestShift, EntanglementBreakShift,
+    EntanglementCreateShift, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation,
     RegistrationShift, Signal, StakeShift, StatefulShift, VectorClock,
 };
 use crate::network::PeerDirectory;
@@ -207,6 +208,45 @@ impl ApiState {
             tokio::spawn(async move {
                 if let Err(e) = sender.send(signal).await {
                     tracing::warn!("failed to broadcast physical attestation: {}", e);
+                }
+            });
+        }
+    }
+
+    /// Broadcast a Causal Agent Entanglement creation to mesh peers.
+    pub fn broadcast_entanglement_create(&self, shift: EntanglementCreateShift) {
+        if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
+            let sender = sender.clone();
+            let signal = Signal::EntanglementCreate(shift);
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(signal).await {
+                    tracing::warn!("failed to broadcast entanglement create: {}", e);
+                }
+            });
+        }
+    }
+
+    /// Broadcast a Causal Agent Entanglement witness attestation to mesh peers.
+    pub fn broadcast_entanglement_attest(&self, shift: EntanglementAttestShift) {
+        if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
+            let sender = sender.clone();
+            let signal = Signal::EntanglementAttest(shift);
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(signal).await {
+                    tracing::warn!("failed to broadcast entanglement attestation: {}", e);
+                }
+            });
+        }
+    }
+
+    /// Broadcast a Causal Agent Entanglement break to mesh peers.
+    pub fn broadcast_entanglement_break(&self, shift: EntanglementBreakShift) {
+        if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
+            let sender = sender.clone();
+            let signal = Signal::EntanglementBreak(shift);
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(signal).await {
+                    tracing::warn!("failed to broadcast entanglement break: {}", e);
                 }
             });
         }

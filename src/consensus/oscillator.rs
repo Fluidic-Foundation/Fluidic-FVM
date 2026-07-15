@@ -5,9 +5,10 @@ use crate::consensus::certificate::{
 use crate::consensus::dag::{DagError, RejectionProof, RejectionReason, ShiftStatus, VectorClockDag};
 use crate::consensus::domain::{DomainRegistry, StatefulOrdering};
 use crate::crypto::{
-    AccountId, AgentRegistrationShift, CommutativeShift, DomainId, IntentConstraint, IntentFillShift,
-    IntentShift, KeyPair, PhysicalAttestation, PoolId, RegistrationShift, Signal, StakeShift,
-    StatefulShift, TxHash, VectorClock, DEFAULT_DEX_DOMAIN,
+    AccountId, AgentRegistrationShift, CommutativeShift, DomainId, EntanglementAttestShift,
+    EntanglementBreakShift, EntanglementContract, EntanglementCreateShift, EntanglementId,
+    IntentConstraint, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation, PoolId,
+    RegistrationShift, Signal, StakeShift, StatefulShift, TxHash, VectorClock, DEFAULT_DEX_DOMAIN,
 };
 use crate::evm::EvmPool;
 use crate::field::coordinates::Coordinate;
@@ -16,7 +17,7 @@ use crate::operator::{RewardPool, StakeTable, StakingConfig};
 use crate::value::metabolic::MetabolicDecayEngine;
 use crate::value::SupplyTracker;
 use dashmap::DashMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -85,6 +86,11 @@ pub struct Oscillator {
     pub pending_physical_attestations: Arc<Mutex<Vec<PendingPhysicalAttestation>>>,
     /// Counter of physical attestations accepted since the last synthesis tick.
     pub physical_attestations_ingested: AtomicU64,
+    /// Active Causal Agent Entanglement contracts.
+    pub entanglements: Arc<RwLock<HashMap<EntanglementId, EntanglementContract>>>,
+    /// Per-entanglement witness attestations.  Cleared each tick so attestations
+    /// are fresh; witnesses must re-attest every tick the subject wants to spend.
+    pub entanglement_attestations: Arc<RwLock<HashMap<EntanglementId, std::collections::HashSet<AccountId>>>>,
     /// Optional operator keypair used to sign synthesis certificates.
     pub operator_keypair: Option<KeyPair>,
     /// Signed synthesis certificates indexed by tick.
@@ -176,6 +182,8 @@ impl Oscillator {
             synthesis_tick: AtomicU64::new(0),
             domain_registry: Arc::new(RwLock::new(DomainRegistry::new())),
             operator_keypair: None,
+            entanglements: Arc::new(RwLock::new(HashMap::new())),
+            entanglement_attestations: Arc::new(RwLock::new(HashMap::new())),
             certificates: Arc::new(RwLock::new(HashMap::new())),
             stake_table: Arc::new(StakeTable::new(StakingConfig::default())),
             certificate_tracker: Arc::new(CertificateTracker::new()),
@@ -383,6 +391,27 @@ impl Oscillator {
             Signal::Intent(intent) => self.ingest_intent(intent, key_registry),
             Signal::IntentFill(fill) => self.ingest_intent_fill(fill, key_registry),
             Signal::PhysicalAttestation(attestation) => self.ingest_physical_attestation(attestation, key_registry),
+            Signal::EntanglementCreate(shift) => {
+                if self.apply_entanglement_create(&shift, key_registry) {
+                    Ok(())
+                } else {
+                    Err("entanglement create rejected".to_string())
+                }
+            }
+            Signal::EntanglementAttest(shift) => {
+                if self.apply_entanglement_attest(&shift, key_registry) {
+                    Ok(())
+                } else {
+                    Err("entanglement attestation rejected".to_string())
+                }
+            }
+            Signal::EntanglementBreak(shift) => {
+                if self.apply_entanglement_break(&shift, key_registry) {
+                    Ok(())
+                } else {
+                    Err("entanglement break rejected".to_string())
+                }
+            }
             Signal::Encrypted(_) => {
                 Err("encrypted signals must be decrypted before ingestion".to_string())
             }
@@ -492,6 +521,203 @@ impl Oscillator {
         {
             let reward_pool = self.reward_pool.read().unwrap();
             reward_pool.distribute_fees(fee, &self.stake_table);
+        }
+        true
+    }
+
+    /// Apply a Causal Agent Entanglement (CAE) creation.  Verifies the creator
+    /// signature, checks replay nonce, and stores the contract so it can gate
+    /// future stateful spends by the subject.
+    pub fn apply_entanglement_create(
+        &self,
+        shift: &EntanglementCreateShift,
+        key_registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> bool {
+        let Some(creator_pk) = key_registry.get(&shift.creator) else {
+            tracing::warn!("entanglement create rejected: unknown creator {}", shift.creator);
+            return false;
+        };
+        if !shift.verify(creator_pk) {
+            tracing::warn!("entanglement create rejected: invalid creator signature");
+            return false;
+        }
+        if let Err(e) = self.check_and_record_nonce(shift.creator, DomainId::default(), shift.nonce) {
+            tracing::warn!("entanglement create rejected: {}", e);
+            return false;
+        }
+        if shift.threshold == 0 || shift.threshold > shift.witnesses.len() {
+            tracing::warn!(
+                "entanglement create rejected: threshold {} out of range (witnesses {})",
+                shift.threshold,
+                shift.witnesses.len()
+            );
+            return false;
+        }
+        let tick = self.synthesis_tick.load(Ordering::SeqCst);
+        if shift.expiry_tick <= tick {
+            tracing::warn!(
+                "entanglement create rejected: expiry {} is not in the future (current tick {})",
+                shift.expiry_tick,
+                tick
+            );
+            return false;
+        }
+
+        // Recompute the contract id from the same canonical fields the client
+        // used, so a mismatched id cannot smuggle a duplicate contract.
+        let recomputed = EntanglementCreateShift::recompute_id(
+            shift.creator,
+            shift.subject,
+            &shift.witnesses,
+            shift.threshold,
+            shift.expiry_tick,
+            shift.nonce,
+            shift.timestamp_ns,
+        );
+        if recomputed != shift.id {
+            tracing::warn!("entanglement create rejected: provided id does not match recomputed id");
+            return false;
+        }
+
+        let contract = EntanglementContract {
+            id: shift.id,
+            creator: shift.creator,
+            subject: shift.subject,
+            witnesses: shift.witnesses.clone(),
+            threshold: shift.threshold,
+            expiry_tick: shift.expiry_tick,
+            created_tick: tick,
+        };
+
+        let mut entanglements = self.entanglements.write().unwrap();
+        if entanglements.contains_key(&shift.id) {
+            return true; // already known
+        }
+        entanglements.insert(shift.id, contract);
+        true
+    }
+
+    /// Apply a witness attestation for an active entanglement.  The attestation
+    /// is only valid for the current synthesis tick; attestations are cleared at
+    /// the start of every tick so witnesses must re-attest each time the subject
+    /// wants to spend.
+    pub fn apply_entanglement_attest(
+        &self,
+        shift: &EntanglementAttestShift,
+        key_registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> bool {
+        let Some(witness_pk) = key_registry.get(&shift.witness) else {
+            tracing::warn!("entanglement attestation rejected: unknown witness {}", shift.witness);
+            return false;
+        };
+        if !shift.verify(witness_pk) {
+            tracing::warn!("entanglement attestation rejected: invalid witness signature");
+            return false;
+        }
+        if let Err(e) = self.check_and_record_nonce(shift.witness, DomainId::default(), shift.nonce) {
+            tracing::warn!("entanglement attestation rejected: {}", e);
+            return false;
+        }
+
+        let entanglements = self.entanglements.read().unwrap();
+        let Some(contract) = entanglements.get(&shift.entanglement_id) else {
+            tracing::warn!(
+                "entanglement attestation rejected: unknown contract {}",
+                hex::encode(shift.entanglement_id)
+            );
+            return false;
+        };
+        if !contract.witnesses.contains(&shift.witness) {
+            tracing::warn!(
+                "entanglement attestation rejected: {} is not a witness for contract {}",
+                shift.witness,
+                hex::encode(shift.entanglement_id)
+            );
+            return false;
+        }
+
+        let tick = self.synthesis_tick.load(Ordering::SeqCst);
+        if tick > contract.expiry_tick {
+            tracing::warn!(
+                "entanglement attestation rejected: contract {} expired at tick {} (now {})",
+                hex::encode(shift.entanglement_id),
+                contract.expiry_tick,
+                tick
+            );
+            return false;
+        }
+
+        drop(entanglements);
+        let mut attestations = self.entanglement_attestations.write().unwrap();
+        attestations
+            .entry(shift.entanglement_id)
+            .or_insert_with(HashSet::new)
+            .insert(shift.witness);
+        true
+    }
+
+    /// Break / revoke an entanglement.  The breaker must be the creator, the
+    /// subject, or one of the listed witnesses.
+    pub fn apply_entanglement_break(
+        &self,
+        shift: &EntanglementBreakShift,
+        key_registry: &HashMap<AccountId, ed25519_dalek::VerifyingKey>,
+    ) -> bool {
+        let Some(breaker_pk) = key_registry.get(&shift.breaker) else {
+            tracing::warn!("entanglement break rejected: unknown breaker {}", shift.breaker);
+            return false;
+        };
+        if !shift.verify(breaker_pk) {
+            tracing::warn!("entanglement break rejected: invalid breaker signature");
+            return false;
+        }
+        if let Err(e) = self.check_and_record_nonce(shift.breaker, DomainId::default(), shift.nonce) {
+            tracing::warn!("entanglement break rejected: {}", e);
+            return false;
+        }
+
+        let entanglements = self.entanglements.read().unwrap();
+        let Some(contract) = entanglements.get(&shift.entanglement_id) else {
+            return true; // already gone
+        };
+        let authorized = shift.breaker == contract.creator
+            || shift.breaker == contract.subject
+            || contract.witnesses.contains(&shift.breaker);
+        if !authorized {
+            tracing::warn!(
+                "entanglement break rejected: {} is not authorized to break contract {}",
+                shift.breaker,
+                hex::encode(shift.entanglement_id)
+            );
+            return false;
+        }
+        drop(entanglements);
+
+        let mut entanglements = self.entanglements.write().unwrap();
+        entanglements.remove(&shift.entanglement_id);
+        true
+    }
+
+    /// Return true if `account` is not currently bound by an unmet entanglement
+    /// threshold, or if no active entanglements target `account` as subject.
+    fn entanglement_allows_spend(
+        &self,
+        account: AccountId,
+        tick: u64,
+    ) -> bool {
+        let entanglements = self.entanglements.read().unwrap();
+        let attestations = self.entanglement_attestations.read().unwrap();
+        for (id, contract) in entanglements.iter() {
+            if contract.subject != account {
+                continue;
+            }
+            if tick < contract.created_tick || tick > contract.expiry_tick {
+                continue;
+            }
+            let count = attestations.get(id).map(|s| s.len()).unwrap_or(0);
+            if count < contract.threshold {
+                return false;
+            }
         }
         true
     }
@@ -1319,6 +1545,24 @@ impl Oscillator {
                 }
             }
 
+            // Causal Agent Entanglement: if the sender is the subject of an
+            // active contract, enough listed witnesses must have attested this
+            // tick before the spend can proceed.
+            if !self.entanglement_allows_spend(shift.from, tick) {
+                let err = DagError::EntanglementThresholdNotMet(hash);
+                if let Some(node) = dag.nodes.get_mut(&hash) {
+                    node.status = ShiftStatus::Rejected(err.clone());
+                }
+                self.sign_rejection_proof(
+                    &mut dag,
+                    hash,
+                    RejectionReason::EntanglementThresholdNotMet,
+                    tick,
+                );
+                result.stateful_rejected.push(err);
+                continue;
+            }
+
             let (fee, net_amount) = match self.compute_signal_fee(shift) {
                 Ok(v) => v,
                 Err(_) => {
@@ -1423,6 +1667,11 @@ impl Oscillator {
 
         // 3d. Match and settle financial intents atomically using the latest balances.
         self.process_intents(tick, &mut result);
+
+        // Causal Agent Entanglement attestations are fresh every tick. Clear them
+        // after all stateful spends have been processed so witnesses must
+        // re-attest each tick the subject wants to spend.
+        self.entanglement_attestations.write().unwrap().clear();
 
         // 4. Optionally sign a synthesis certificate if the operator is staked.
         if let Some(ref op_kp) = self.operator_keypair {
@@ -1684,5 +1933,80 @@ mod tests {
         assert_eq!(proof.shift_hash, hash);
         assert!(matches!(proof.reason, RejectionReason::InsufficientBalance));
         assert!(proof.verify(&operator.public_key()));
+    }
+
+    #[test]
+    fn oscillator_entanglement_gates_subject_spend() {
+        let osc = Oscillator::new([1u8; 32], 64);
+        let creator = KeyPair::generate();
+        let subject = KeyPair::generate();
+        let witness = KeyPair::generate();
+        let recipient = KeyPair::generate();
+
+        osc.seed_account(subject.account_id(), 1_000_000_000_000);
+
+        let mut registry = HashMap::new();
+        registry.insert(creator.account_id(), creator.public_key());
+        registry.insert(subject.account_id(), subject.public_key());
+        registry.insert(witness.account_id(), witness.public_key());
+
+        // Create an entanglement: subject spends only if witness attests.
+        let create = EntanglementCreateShift::new(
+            &creator,
+            subject.account_id(),
+            vec![witness.account_id()],
+            1,
+            1_000_000,
+            0,
+            0,
+        );
+        assert!(osc.apply_entanglement_create(&create, &registry));
+
+        // Subject tries to spend without a witness attestation.
+        let mut vc = VectorClock::new();
+        vc.tick(osc.id);
+        let spend = StatefulShift::new(
+            &subject,
+            DEFAULT_DEX_DOMAIN,
+            recipient.account_id(),
+            500,
+            vc.clone(),
+            vec![],
+            1,
+            0,
+        );
+        let hash = spend.hash();
+        osc.ingest(Signal::Stateful(spend), &registry).unwrap();
+
+        let result1 = osc.synthesize(&registry);
+        assert_eq!(result1.stateful_applied, 0);
+        assert!(result1.stateful_rejected.iter().any(|e| {
+            matches!(e, DagError::EntanglementThresholdNotMet(h) if *h == hash)
+        }));
+
+        // Witness attests in the next tick.
+        let attest = EntanglementAttestShift::new(
+            &witness,
+            create.id,
+            0,
+            0,
+        );
+        assert!(osc.apply_entanglement_attest(&attest, &registry));
+
+        // Subject retries with a fresh nonce.
+        let spend2 = StatefulShift::new(
+            &subject,
+            DEFAULT_DEX_DOMAIN,
+            recipient.account_id(),
+            500,
+            vc,
+            vec![],
+            2,
+            0,
+        );
+        osc.ingest(Signal::Stateful(spend2), &registry).unwrap();
+
+        let result2 = osc.synthesize(&registry);
+        assert_eq!(result2.stateful_applied, 1);
     }
 }
