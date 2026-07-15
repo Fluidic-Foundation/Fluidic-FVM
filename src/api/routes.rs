@@ -24,6 +24,7 @@ pub fn api_router() -> Router<Arc<ApiState>> {
         .route("/api/health", get(health))
         .route("/api/state", get(get_state))
         .route("/api/account/:id/balance", get(get_balance))
+        .route("/api/account/:id/vector-clock", get(get_account_vector_clock))
         .route("/api/account/:id/shifts", get(get_account_shifts))
         .route("/api/account/:id", get(get_account_overview))
         .route("/api/account/register", post(register_account))
@@ -49,6 +50,7 @@ pub fn api_router() -> Router<Arc<ApiState>> {
         .route("/api/certificate/:tick", get(get_certificate))
         .route("/api/quorum/:tick", get(get_quorum_status))
         .route("/api/ticks/recent", get(get_recent_ticks))
+        .route("/api/tick/current", get(get_current_tick))
         .route("/api/ticks/:tick", get(get_tick))
         .route("/api/operator/info", get(get_operator_info))
         .route("/api/operator/stake", post(submit_operator_stake))
@@ -193,6 +195,33 @@ async fn get_balance(
     }))
 }
 
+#[derive(Serialize)]
+struct VectorClockResponse {
+    account: String,
+    sender_node: String,
+    vector_clock: serde_json::Value,
+}
+
+async fn get_account_vector_clock(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<VectorClockResponse>, StatusCode> {
+    wait_for_min_tick(&state, query.min_tick).await;
+    let user = parse_account(&id)?;
+    let tip = state.oscillator.dag.lock().unwrap().account_tip(&user);
+    let entries: std::collections::BTreeMap<String, u64> = tip
+        .0
+        .iter()
+        .map(|(node, time)| (hex::encode(node), *time))
+        .collect();
+    Ok(Json(VectorClockResponse {
+        account: id,
+        sender_node: hex::encode(user.0),
+        vector_clock: serde_json::json!({ "entries": entries }),
+    }))
+}
+
 /// Return the recent shifts that involve a given account (matching either the
 /// main account id or its derived WAVE / USDC token accounts as sender or
 /// recipient).  Backed by the in-memory recent-shift ring buffer.
@@ -301,10 +330,13 @@ async fn register_account(
     let account = AccountId::from_public_key(&vk);
     state.register_key(account, vk);
 
-    // Faucet: seed both token accounts for the demo.
+    // Faucet: seed both token accounts for the demo, plus a small WAVE reserve
+    // on the owner account to cover intent submission fees and agent registrations.
     let (wave_acc, usdc_acc) = state.token_accounts(account);
     state.oscillator.seed_account(wave_acc, 1_000_000_000_000_000); // 1,000 WAVE
     state.oscillator.seed_account(usdc_acc, 1_000_000_000_000_000); // 1,000 USDC
+    state.oscillator.seed_account(account, 1_000_000_000_000); // 1 WAVE for fees
+    state.oscillator.mark_non_decaying(account);
     // USDC is foreign value and is exempt from metabolic decay.
     state.oscillator.mark_non_decaying(usdc_acc);
 
@@ -525,11 +557,11 @@ async fn submit_intent(
     }
 
     let hash = intent.hash();
-    state.broadcast_intent(intent.clone());
     state
         .oscillator
-        .ingest(Signal::Intent(intent), &registry)
+        .ingest(Signal::Intent(intent.clone()), &registry)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("intent ingest failed: {}", e)))?;
+    state.broadcast_intent(intent);
 
     Ok(Json(serde_json::json!({
         "status": "queued",
@@ -578,11 +610,11 @@ async fn submit_intent_fill(
     }
 
     let hash = fill.hash();
-    state.broadcast_intent_fill(fill.clone());
     state
         .oscillator
-        .ingest(Signal::IntentFill(fill), &registry)
+        .ingest(Signal::IntentFill(fill.clone()), &registry)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("intent fill ingest failed: {}", e)))?;
+    state.broadcast_intent_fill(fill);
 
     Ok(Json(serde_json::json!({
         "status": "queued",
@@ -661,11 +693,11 @@ async fn submit_physical_attestation(
     }
 
     let hash = attestation.hash();
-    state.broadcast_physical_attestation(attestation.clone());
     state
         .oscillator
-        .ingest(Signal::PhysicalAttestation(attestation), &registry)
+        .ingest(Signal::PhysicalAttestation(attestation.clone()), &registry)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("physical attestation ingest failed: {}", e)))?;
+    state.broadcast_physical_attestation(attestation);
 
     Ok(Json(serde_json::json!({
         "status": "queued",
@@ -792,11 +824,11 @@ async fn create_entanglement(
         return Err((StatusCode::BAD_REQUEST, "entanglement id does not match recomputed id".to_string()));
     }
 
-    state.broadcast_entanglement_create(shift.clone());
     state
         .oscillator
-        .ingest(Signal::EntanglementCreate(shift), &registry)
+        .ingest(Signal::EntanglementCreate(shift.clone()), &registry)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("entanglement create ingest failed: {}", e)))?;
+    state.broadcast_entanglement_create(shift);
 
     Ok(Json(serde_json::json!({
         "status": "created",
@@ -840,11 +872,11 @@ async fn attest_entanglement(
         return Err((StatusCode::UNAUTHORIZED, "invalid witness signature".to_string()));
     }
 
-    state.broadcast_entanglement_attest(shift.clone());
     state
         .oscillator
-        .ingest(Signal::EntanglementAttest(shift), &registry)
+        .ingest(Signal::EntanglementAttest(shift.clone()), &registry)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("entanglement attest ingest failed: {}", e)))?;
+    state.broadcast_entanglement_attest(shift);
 
     Ok(Json(serde_json::json!({
         "status": "attested",
@@ -889,11 +921,11 @@ async fn break_entanglement(
         return Err((StatusCode::UNAUTHORIZED, "invalid breaker signature".to_string()));
     }
 
-    state.broadcast_entanglement_break(shift.clone());
     state
         .oscillator
-        .ingest(Signal::EntanglementBreak(shift), &registry)
+        .ingest(Signal::EntanglementBreak(shift.clone()), &registry)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("entanglement break ingest failed: {}", e)))?;
+    state.broadcast_entanglement_break(shift);
 
     Ok(Json(serde_json::json!({
         "status": "broken",
@@ -2019,6 +2051,14 @@ async fn get_recent_ticks(
     });
     ticks.truncate(limit);
     Json(serde_json::json!({ "ticks": ticks }))
+}
+
+async fn get_current_tick(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
+    let tick = state
+        .oscillator
+        .synthesis_tick
+        .load(std::sync::atomic::Ordering::SeqCst);
+    Json(serde_json::json!({ "tick": tick }))
 }
 
 async fn get_tick(
