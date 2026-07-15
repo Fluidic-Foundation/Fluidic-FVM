@@ -198,10 +198,9 @@ pub fn api_url_from_peer(peer: &str) -> Option<String> {
     None
 }
 
-/// Default timeout for each peer sync attempt.  Keep this short so a fresh
-/// seed/operator can fall back to its own genesis state quickly when the mesh
-/// is still bootstrapping.
-const SYNC_PEER_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default timeout for each peer sync attempt.  Full snapshots can be large,
+/// so allow plenty of time for a fresh node to download the current state.
+const SYNC_PEER_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Try to sync from any of the provided peer endpoints concurrently.
 /// Returns the first successful snapshot, or an error if every peer fails.
