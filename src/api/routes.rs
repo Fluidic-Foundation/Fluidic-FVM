@@ -2067,6 +2067,12 @@ async fn get_sync_state(State(state): State<Arc<ApiState>>) -> impl IntoResponse
         .synthesis_tick
         .load(std::sync::atomic::Ordering::SeqCst);
 
+    // Sync snapshots can grow very large over time.  Keep the response small
+    // enough to serialize and transfer reliably: drop zero-balance accounts and
+    // only include certificates from the most recent ticks (enough to bridge a
+    // joining node past finalization depth without sending the whole chain).
+    const SYNC_CERTIFICATE_LOOKBACK: u64 = 1_000;
+
     let balances: std::collections::HashMap<String, serde_json::Value> = {
         let field = state.oscillator.wave_field.lock().unwrap();
         field
@@ -2075,6 +2081,7 @@ async fn get_sync_state(State(state): State<Arc<ApiState>>) -> impl IntoResponse
             .map(|dex| {
                 dex.accounts
                     .iter()
+                    .filter(|entry| entry.value().balance.units > 0)
                     .map(|entry| {
                         let acc = *entry.key();
                         let bal = &entry.value().balance;
@@ -2101,6 +2108,7 @@ async fn get_sync_state(State(state): State<Arc<ApiState>>) -> impl IntoResponse
             .map(|dex| {
                 dex.pools
                     .iter()
+                    .filter(|entry| entry.value().units > 0)
                     .map(|entry| (hex::encode(entry.key()), entry.value().units.to_string()))
                     .collect()
             })
@@ -2118,8 +2126,10 @@ async fn get_sync_state(State(state): State<Arc<ApiState>>) -> impl IntoResponse
 
     let certificates: Vec<serde_json::Value> = {
         let certs = state.oscillator.certificates.read().unwrap();
+        let min_tick = current_tick.saturating_sub(SYNC_CERTIFICATE_LOOKBACK);
         certs
             .iter()
+            .filter(|(tick, _cert)| **tick >= min_tick)
             .map(|(_tick, cert)| serde_json::to_value(cert).unwrap_or(serde_json::Value::Null))
             .filter(|v| !v.is_null())
             .collect()
