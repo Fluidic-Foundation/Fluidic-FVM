@@ -428,12 +428,26 @@ impl Oscillator {
             tracing::warn!("stake rejected for {}: invalid signature", stake.operator);
             return false;
         }
+
+        let previous_locked = self.stake_table.get_stake(&stake.operator);
+        let nonce_key = (stake.operator, DomainId::default());
+        let nonce_seen = self
+            .seen_nonces
+            .get(&nonce_key)
+            .map(|entry| *entry)
+            .unwrap_or(0);
+
+        // Idempotent: the synced snapshot may already contain this exact stake.
+        // Re-broadcasts from peers must not produce noisy replay warnings.
+        if stake.amount == previous_locked && stake.nonce <= nonce_seen {
+            return true;
+        }
+
         if let Err(e) = self.check_and_record_nonce(stake.operator, DomainId::default(), stake.nonce) {
             tracing::warn!("stake rejected for {}: {}", stake.operator, e);
             return false;
         }
 
-        let previous_locked = self.stake_table.get_stake(&stake.operator);
         if stake.amount == previous_locked {
             return true;
         }

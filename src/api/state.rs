@@ -1,8 +1,8 @@
 use crate::consensus::{Oscillator, ShiftStatus, SynthesisResult};
 use crate::crypto::{
-    AccountId, AgentRegistrationShift, EntanglementAttestShift, EntanglementBreakShift,
-    EntanglementCreateShift, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation,
-    RegistrationShift, Signal, StakeShift, StatefulShift, VectorClock,
+    AccountId, AgentRegistrationShift, CommutativeShift, EntanglementAttestShift,
+    EntanglementBreakShift, EntanglementCreateShift, IntentFillShift, IntentShift, KeyPair,
+    PhysicalAttestation, RegistrationShift, Signal, StakeShift, StatefulShift, VectorClock,
 };
 use crate::network::PeerDirectory;
 use ed25519_dalek::VerifyingKey;
@@ -247,6 +247,34 @@ impl ApiState {
             tokio::spawn(async move {
                 if let Err(e) = sender.send(signal).await {
                     tracing::warn!("failed to broadcast entanglement break: {}", e);
+                }
+            });
+        }
+    }
+
+    /// Broadcast a stateful shift to mesh peers so other full nodes can apply
+    /// the same transaction and converge on identical synthesis roots.
+    pub fn broadcast_stateful_shift(&self, shift: StatefulShift) {
+        if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
+            let sender = sender.clone();
+            let signal = Signal::Stateful(shift);
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(signal).await {
+                    tracing::warn!("failed to broadcast stateful shift: {}", e);
+                }
+            });
+        }
+    }
+
+    /// Broadcast a commutative shift to mesh peers so other full nodes can
+    /// apply the same delta and converge on identical synthesis roots.
+    pub fn broadcast_commutative_shift(&self, shift: CommutativeShift) {
+        if let Some(sender) = self.gossip.lock().unwrap().as_ref() {
+            let sender = sender.clone();
+            let signal = Signal::Commutative(shift);
+            tokio::spawn(async move {
+                if let Err(e) = sender.send(signal).await {
+                    tracing::warn!("failed to broadcast commutative shift: {}", e);
                 }
             });
         }

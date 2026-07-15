@@ -1243,8 +1243,9 @@ async fn submit_stateful(
         };
         state
             .oscillator
-            .ingest(Signal::Stateful(payout), &registry)
+            .ingest(Signal::Stateful(payout.clone()), &registry)
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("payout ingest failed: {}", e)))?;
+        state.broadcast_stateful_shift(payout);
     }
 
     let user_hash = shift.hash();
@@ -1261,8 +1262,9 @@ async fn submit_stateful(
     });
     state
         .oscillator
-        .ingest(Signal::Stateful(shift), &registry)
+        .ingest(Signal::Stateful(shift.clone()), &registry)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("shift ingest failed: {}", e)))?;
+    state.broadcast_stateful_shift(shift);
 
     Ok(Json(serde_json::json!({
         "status": "queued",
@@ -1318,8 +1320,9 @@ async fn submit_commutative(
     });
     state
         .oscillator
-        .ingest(Signal::Commutative(shift), &registry)
+        .ingest(Signal::Commutative(shift.clone()), &registry)
         .map_err(|_| StatusCode::BAD_REQUEST)?;
+    state.broadcast_commutative_shift(shift);
     Ok(Json(serde_json::json!({
         "hash": hex::encode(hash),
         "status": "queued"
