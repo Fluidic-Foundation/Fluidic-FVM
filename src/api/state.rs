@@ -316,6 +316,54 @@ impl ApiState {
         }
     }
 
+    /// Record a gossiped shift in the explorer's recent-shifts buffer so nodes
+    /// that did not submit the shift themselves still display network activity.
+    pub fn record_signal(&self,
+        signal: &Signal,
+        status: &str,
+    ) {
+        match signal {
+            Signal::Stateful(shift) => {
+                let is_wave_to_pool = shift.to == self.pool_wave_account;
+                let is_usdc_to_pool = shift.to == self.pool_usdc_account;
+                let is_wave_from_pool = shift.from == self.pool_wave_account;
+                let is_usdc_from_pool = shift.from == self.pool_usdc_account;
+                let token = if is_wave_to_pool || is_wave_from_pool {
+                    "WAVE"
+                } else if is_usdc_to_pool || is_usdc_from_pool {
+                    "USDC"
+                } else {
+                    "units"
+                };
+                self.record_shift(RecentShift {
+                    hash: hex::encode(shift.hash()),
+                    kind: "stateful".to_string(),
+                    status: status.to_string(),
+                    domain: Some(hex::encode(shift.domain)),
+                    from: Some(shift.from.to_string()),
+                    to: Some(shift.to.to_string()),
+                    amount: Some(shift.amount.to_string()),
+                    token: Some(token.to_string()),
+                    timestamp_ns: shift.timestamp_ns,
+                });
+            }
+            Signal::Commutative(shift) => {
+                self.record_shift(RecentShift {
+                    hash: hex::encode(shift.hash()),
+                    kind: "commutative".to_string(),
+                    status: status.to_string(),
+                    domain: Some(hex::encode(shift.domain)),
+                    from: Some(shift.from.to_string()),
+                    to: None,
+                    amount: Some(shift.delta.to_string()),
+                    token: Some("units".to_string()),
+                    timestamp_ns: shift.timestamp_ns,
+                });
+            }
+            _ => {}
+        }
+    }
+
     pub fn token_accounts(&self, user_account: AccountId) -> (AccountId, AccountId) {
         (derive_account(user_account, b"WAVE"), derive_account(user_account, b"USDC"))
     }

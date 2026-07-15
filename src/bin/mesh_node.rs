@@ -805,6 +805,9 @@ async fn main() {
                 other => {
                     if !client_mode {
                         let registry = api_state_ingest.key_registry();
+                        // Mirror peer-submitted shifts into the explorer buffer
+                        // so any node's API reflects mesh activity.
+                        api_state_ingest.record_signal(&other, "accepted");
                         if let Err(e) = osc_ingest.ingest(other, &registry) {
                             warn!("ingest error: {}", e);
                         }
