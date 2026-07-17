@@ -285,6 +285,15 @@ impl CertificateTracker {
             .find(|e| *e.value() >= threshold)
             .map(|e| (e.key().clone(), *e.value()))
     }
+
+    /// Drop all certificate records for ticks strictly older than `min_tick`.
+    /// Quorum decisions for finalized ticks are already settled; keeping them
+    /// forever grows memory linearly with uptime.
+    pub fn prune_older_than(&self, min_tick: u64) {
+        self.by_operator_tick
+            .retain(|(_, tick), _| *tick >= min_tick);
+        self.by_tick.retain(|tick, _| *tick >= min_tick);
+    }
 }
 
 #[cfg(test)]

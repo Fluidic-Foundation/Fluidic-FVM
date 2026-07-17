@@ -312,6 +312,46 @@ impl VectorClockDag {
             .collect()
     }
 
+    /// Remove finalized nodes older than `min_tick` that have no children.
+    /// Such nodes cannot be predecessors for future shifts, so dropping them
+    /// does not affect causality.  Also bounds the rejected/proof maps.
+    pub fn prune_finalized_before(&mut self, min_tick: u64, keep_rejected: usize) {
+        let to_remove: Vec<TxHash> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.status == ShiftStatus::Finalized
+                    && node.finalized_at_tick.map(|t| t < min_tick).unwrap_or(false)
+                    && node.children.is_empty()
+            })
+            .map(|(hash, _)| *hash)
+            .collect();
+        for hash in &to_remove {
+            self.nodes.remove(hash);
+            self.roots.remove(hash);
+        }
+
+        if self.rejected.len() > keep_rejected {
+            let mut entries: Vec<_> = self.rejected.iter().map(|(h, e)| (*h, e.clone())).collect();
+            entries.sort_by_key(|(_, e)| match e {
+                DagError::InvalidSignature(h)
+                | DagError::MissingPredecessor(h)
+                | DagError::InsufficientBalance(h)
+                | DagError::DoubleSpend(h)
+                | DagError::CausalCycle(h)
+                | DagError::EntanglementThresholdNotMet(h) => *h,
+            });
+            let keep: std::collections::HashSet<_> = entries
+                .into_iter()
+                .rev()
+                .take(keep_rejected)
+                .map(|(h, _)| h)
+                .collect();
+            self.rejected.retain(|h, _| keep.contains(h));
+            self.rejection_proofs.retain(|h, _| keep.contains(h));
+        }
+    }
+
     /// Return the latest observed vector clock for an account, or an empty clock.
     pub fn account_tip(&self, account: &crate::crypto::AccountId) -> VectorClock {
         self.account_tips

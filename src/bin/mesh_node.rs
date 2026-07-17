@@ -954,6 +954,9 @@ async fn main() {
     let mut synth_ticker = interval(Duration::from_millis(synth_interval_ms));
     let mut shutdown = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("failed to install SIGTERM handler");
+    let mut tick_count = 0u64;
+    const PRUNE_EVERY_TICKS: u64 = 1_000;
+    const PRUNE_KEEP_TICKS: u64 = 1_000;
 
     loop {
         tokio::select! {
@@ -985,7 +988,7 @@ async fn main() {
                     }
                 }
 
-                info!(
+                tracing::debug!(
                     "synthesis: commutative={} stateful={} evm={} rejected={} latency_ms={:.2} throughput={:.1}",
                     result.commutative_applied,
                     result.stateful_applied,
@@ -996,6 +999,11 @@ async fn main() {
                 );
                 for err in &result.stateful_rejected {
                     tracing::warn!("stateful shift rejected: {:?}", err);
+                }
+
+                tick_count += 1;
+                if tick_count % PRUNE_EVERY_TICKS == 0 {
+                    oscillator.prune_tick_state(PRUNE_KEEP_TICKS);
                 }
             }
             _ = shutdown.recv() => {

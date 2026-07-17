@@ -1056,6 +1056,11 @@ impl Oscillator {
         let mut unmatched_intents: Vec<IntentShift> = Vec::new();
         let mut unmatched_fills: Vec<IntentFillShift> = Vec::new();
         let mut matched_intent_ids = std::collections::HashSet::new();
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        const MAX_FILL_AGE_NS: u64 = 3_600_000_000_000; // 1 hour
 
         // Index open intents by id.
         let mut intent_by_id: HashMap<TxHash, IntentShift> = HashMap::new();
@@ -1074,6 +1079,18 @@ impl Oscillator {
         let field = self.wave_field.lock().unwrap();
 
         for fill in fills {
+            // Only expire fills that carry a real submission timestamp; test
+            // fixtures and legacy clients may use zero.
+            if fill.timestamp_ns > 0
+                && now_ns.saturating_sub(fill.timestamp_ns) > MAX_FILL_AGE_NS
+            {
+                tracing::trace!(
+                    "intent fill for {} expired (age {} ns)",
+                    hex::encode(fill.intent_id),
+                    now_ns.saturating_sub(fill.timestamp_ns)
+                );
+                continue;
+            }
             let Some(intent) = intent_by_id.get(&fill.intent_id) else {
                 unmatched_fills.push(fill);
                 continue;
@@ -1747,6 +1764,23 @@ impl Oscillator {
 
     pub fn stateful_count(&self) -> usize {
         self.dag.lock().unwrap().nodes.len()
+    }
+
+    /// Prune state that grows linearly with tick count.  Called periodically
+    /// from the synthesis loop; keeps only the most recent `keep_ticks` ticks
+    /// of certificates and quorum records so long-running nodes do not OOM.
+    pub fn prune_tick_state(&self, keep_ticks: u64) {
+        let current = self.synthesis_tick.load(std::sync::atomic::Ordering::SeqCst);
+        let min_tick = current.saturating_sub(keep_ticks);
+        {
+            let mut certs = self.certificates.write().unwrap();
+            certs.retain(|tick, _| *tick >= min_tick);
+        }
+        self.certificate_tracker.prune_older_than(min_tick);
+        {
+            let mut dag = self.dag.lock().unwrap();
+            dag.prune_finalized_before(min_tick, 1_000);
+        }
     }
 }
 

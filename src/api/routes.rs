@@ -2084,11 +2084,17 @@ async fn get_recent_ticks(
     wait_for_min_tick(&state, query.min_tick).await;
     let limit = query.limit.unwrap_or(20).min(100);
     let certs = state.oscillator.certificates.read().unwrap();
-    let mut ticks: Vec<_> = certs
-        .iter()
-        .map(|(tick, cert)| {
-            let finalized = state.oscillator.check_quorum(*tick).is_some();
-            serde_json::json!({
+    let current_tick = state
+        .oscillator
+        .synthesis_tick
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let start_tick = current_tick.saturating_sub(limit as u64);
+    let mut ticks: Vec<_> = (start_tick..current_tick)
+        .rev()
+        .filter_map(|tick| {
+            let cert = certs.get(&tick)?;
+            let finalized = state.oscillator.check_quorum(tick).is_some();
+            Some(serde_json::json!({
                 "tick": cert.tick,
                 "hash": hex::encode(cert.hash()),
                 "operator": cert.operator.to_string(),
@@ -2103,15 +2109,9 @@ async fn get_recent_ticks(
                     "reward": hex::encode(cert.reward_root),
                 },
                 "finalized": finalized,
-            })
+            }))
         })
         .collect();
-    // Sort descending by tick.
-    ticks.sort_by(|a, b| {
-        let at = a.get("tick").and_then(|v| v.as_u64()).unwrap_or(0);
-        let bt = b.get("tick").and_then(|v| v.as_u64()).unwrap_or(0);
-        bt.cmp(&at)
-    });
     ticks.truncate(limit);
     Json(serde_json::json!({ "ticks": ticks }))
 }

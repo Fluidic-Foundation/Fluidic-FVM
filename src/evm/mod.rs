@@ -179,6 +179,10 @@ impl EvmPool {
         finalized_at_ns: u64,
         tick: u64,
     ) -> (usize, f64, Vec<H256>) {
+        if self.pending.is_empty() {
+            return (0, 0.0, Vec::new());
+        }
+
         // Sort by (sender, nonce) so each sender's transactions are ordered.
         self.pending
             .sort_by(|a, b| a.from.cmp(&b.from).then(a.nonce.cmp(&b.nonce)));
