@@ -150,7 +150,7 @@ pub async fn start_api_server(state: Arc<ApiState>, port: u16) -> Result<(), Str
 
     tracing::info!("API server listening on http://{}", addr);
 
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .map_err(|e| format!("API server error: {}", e))
 }

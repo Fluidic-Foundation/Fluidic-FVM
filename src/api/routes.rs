@@ -9,7 +9,7 @@ use crate::crypto::{
 };
 use crate::evm::{block_hash_for, evm_address_to_fluidic};
 use axum::{
-    extract::{Path, Query, State, WebSocketUpgrade},
+    extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -17,7 +17,35 @@ use axum::{
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
+
+const FAUCET_KEY_COOLDOWN: Duration = Duration::from_secs(3600);
+const FAUCET_IP_WINDOW: Duration = Duration::from_secs(3600);
+const FAUCET_IP_MAX: usize = 10;
+
+/// Extract a client IP from `X-Forwarded-For`, falling back to the socket address.
+fn client_ip(headers: &HeaderMap, connect: &ConnectInfo<SocketAddr>) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| connect.0.ip().to_string())
+}
+
+fn check_faucet(
+    state: &ApiState,
+    key: &str,
+    ip: &str,
+) -> Result<(), (StatusCode, &'static str)> {
+    state
+        .faucet_limits
+        .check_and_record(key, ip, FAUCET_KEY_COOLDOWN, FAUCET_IP_WINDOW, FAUCET_IP_MAX)
+        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e))
+}
 
 pub fn api_router() -> Router<Arc<ApiState>> {
     Router::new()
@@ -322,20 +350,37 @@ struct RegisterRequest {
 
 async fn register_account(
     State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(req): Json<RegisterRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let pk_bytes = hex::decode(&req.public_key_hex).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let vk = VerifyingKey::from_bytes(&pk_bytes.try_into().map_err(|_| StatusCode::BAD_REQUEST)?)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+) -> Result<Json<serde_json::Value>, (StatusCode, &'static str)> {
+    let pk_bytes = hex::decode(&req.public_key_hex).map_err(|_| (StatusCode::BAD_REQUEST, "invalid public key hex"))?;
+    let vk = VerifyingKey::from_bytes(&pk_bytes.try_into().map_err(|_| (StatusCode::BAD_REQUEST, "invalid public key length"))?)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid ed25519 public key"))?;
     let account = AccountId::from_public_key(&vk);
+
+    let ip = client_ip(&headers, &ConnectInfo(addr));
+    check_faucet(&state, &format!("account:{}", account), &ip)?;
+
     state.register_key(account, vk);
 
-    // Faucet: seed both token accounts for the demo, plus a small WAVE reserve
-    // on the owner account to cover intent submission fees and agent registrations.
     let (wave_acc, usdc_acc) = state.token_accounts(account);
-    state.oscillator.seed_account(wave_acc, 1_000_000_000_000_000); // 1,000 WAVE
-    state.oscillator.seed_account(usdc_acc, 1_000_000_000_000_000); // 1,000 USDC
-    state.oscillator.seed_account(account, 1_000_000_000_000); // 1 WAVE for fees
+    let already_funded = {
+        let field = state.oscillator.wave_field.lock().unwrap();
+        field.account_balance(account).units > 0
+            || field.account_balance(wave_acc).units > 0
+            || field.account_balance(usdc_acc).units > 0
+    };
+
+    let mut seeded = false;
+    if !already_funded {
+        // Faucet: seed both token accounts for the demo, plus a small WAVE reserve
+        // on the owner account to cover intent submission fees and agent registrations.
+        state.oscillator.seed_account(wave_acc, 1_000_000_000_000_000); // 1,000 WAVE
+        state.oscillator.seed_account(usdc_acc, 1_000_000_000_000_000); // 1,000 USDC
+        state.oscillator.seed_account(account, 1_000_000_000_000); // 1 WAVE for fees
+        seeded = true;
+    }
     state.oscillator.mark_non_decaying(account);
     // USDC is foreign value and is exempt from metabolic decay.
     state.oscillator.mark_non_decaying(usdc_acc);
@@ -362,6 +407,7 @@ async fn register_account(
         "account_id": account.to_string(),
         "wave_account": hex::encode(wave_acc.0),
         "usdc_account": hex::encode(usdc_acc.0),
+        "seeded": seeded,
     })))
 }
 
@@ -1098,20 +1144,37 @@ struct EvmFaucetRequest {
 
 async fn evm_faucet(
     State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
+    ConnectInfo(socket_addr): ConnectInfo<SocketAddr>,
     Json(req): Json<EvmFaucetRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, (StatusCode, &'static str)> {
     let addr_bytes = hex::decode(req.address.trim_start_matches("0x"))
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid address hex"))?;
     if addr_bytes.len() != 20 {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err((StatusCode::BAD_REQUEST, "address must be 20 bytes"));
     }
     let addr = ethers_core::types::Address::from_slice(&addr_bytes);
     let fluidic_account = evm_address_to_fluidic(&addr);
-    state.oscillator.seed_account(fluidic_account, 1_000_000_000_000_000); // 1,000 WAVE
+
+    let ip = client_ip(&headers, &ConnectInfo(socket_addr));
+    check_faucet(&state, &format!("evm:{}", req.address.to_lowercase()), &ip)?;
+
+    let balance = {
+        let field = state.oscillator.wave_field.lock().unwrap();
+        field.account_balance(fluidic_account).units
+    };
+
+    let dripped = if balance == 0 {
+        state.oscillator.seed_account(fluidic_account, 1_000_000_000_000_000); // 1,000 WAVE
+        "1000"
+    } else {
+        "0"
+    };
+
     Ok(Json(serde_json::json!({
         "address": req.address,
         "fluidic_account": fluidic_account.to_string(),
-        "dripped_wave": "1000",
+        "dripped_wave": dripped,
     })))
 }
 
@@ -2254,6 +2317,12 @@ async fn get_sync_shifts(
 }
 
 fn gossip_psk() -> Option<[u8; 32]> {
+    let require = std::env::var("GOSSIP_REQUIRE_AUTH")
+        .map(|s| s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !require {
+        return None;
+    }
     std::env::var("FLUIDIC_PSK")
         .ok()
         .and_then(|s| {

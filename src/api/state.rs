@@ -8,6 +8,7 @@ use crate::network::PeerDirectory;
 use ed25519_dalek::VerifyingKey;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
 
 /// Derive a deterministic account for a given base and domain salt.
@@ -58,6 +59,65 @@ pub struct SynthesisStats {
     pub network_ms: f64,
 }
 
+/// Per-node faucet rate-limiting state. Not consensus-critical: limits only
+/// affect how quickly a single node seeds fresh testnet accounts.
+#[derive(Clone, Debug)]
+pub struct FaucetLimits {
+    /// Last seeding time keyed by account id or EVM address.
+    per_key: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Recent hits per client IP, used to cap Sybil registration rates.
+    per_ip: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+}
+
+impl FaucetLimits {
+    pub fn new() -> Self {
+        Self {
+            per_key: Arc::new(Mutex::new(HashMap::new())),
+            per_ip: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn prune_ip_hits(hits: &mut Vec<Instant>, window: Duration, now: Instant) {
+        hits.retain(|t| now.duration_since(*t) < window);
+    }
+
+    pub fn check_and_record(
+        &self,
+        key: &str,
+        ip: &str,
+        key_cooldown: Duration,
+        ip_window: Duration,
+        ip_max: usize,
+    ) -> Result<(), &'static str> {
+        let now = Instant::now();
+        {
+            let mut map = self.per_key.lock().unwrap();
+            if let Some(last) = map.get(key) {
+                if now.duration_since(*last) < key_cooldown {
+                    return Err("rate limit exceeded");
+                }
+            }
+            map.insert(key.to_string(), now);
+        }
+        {
+            let mut map = self.per_ip.lock().unwrap();
+            let hits = map.entry(ip.to_string()).or_default();
+            Self::prune_ip_hits(hits, ip_window, now);
+            if hits.len() >= ip_max {
+                return Err("IP rate limit exceeded");
+            }
+            hits.push(now);
+        }
+        Ok(())
+    }
+}
+
+impl Default for FaucetLimits {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct RecentShift {
     pub hash: String,
@@ -89,6 +149,8 @@ pub struct ApiState {
     pub recent_shifts: Arc<Mutex<Vec<RecentShift>>>,
     /// Signed peer endpoint directory used for decentralized discovery.
     pub peer_directory: PeerDirectory,
+    /// Rate-limit state for node-level faucet endpoints.
+    pub faucet_limits: FaucetLimits,
 }
 
 impl ApiState {
@@ -114,6 +176,7 @@ impl ApiState {
             operator_keypair: Mutex::new(None),
             recent_shifts: Arc::new(Mutex::new(Vec::with_capacity(200))),
             peer_directory: PeerDirectory::new(),
+            faucet_limits: FaucetLimits::new(),
         };
 
         // Seed the DEX pool.

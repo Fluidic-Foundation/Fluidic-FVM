@@ -9,3 +9,4 @@
 *.swp
 *.swo
 docs/node_modules
+/data

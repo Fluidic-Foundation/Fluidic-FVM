@@ -13,9 +13,29 @@ use fluidic::persistence;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::interval;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tokio::time::{interval, sleep, timeout};
 use tracing::{info, trace, warn};
+
+/// Wait up to `timeout` for a DHT client to initialize in the background.
+async fn wait_for_dht(
+    cell: &TokioMutex<Option<DhtDiscovery>>,
+    timeout_dur: Duration,
+) -> Option<DhtDiscovery> {
+    let deadline = tokio::time::Instant::now() + timeout_dur;
+    loop {
+        {
+            let lock = cell.lock().await;
+            if let Some(d) = lock.clone() {
+                return Some(d);
+            }
+        }
+        if tokio::time::Instant::now() > deadline {
+            return None;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+}
 
 fn peer_cache_path() -> std::path::PathBuf {
     let dir = std::env::var("FLUIDIC_DATA_DIR").unwrap_or_else(|_| "./data".to_string());
@@ -244,26 +264,40 @@ async fn main() {
         info!("running in client mode: will verify operator certificates instead of synthesizing");
     }
 
-    let dht_discovery = if enable_dht {
-        match DhtDiscovery::new(&network_id) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                warn!("failed to start DHT discovery: {}", e);
-                None
+    let dht_cell: Arc<TokioMutex<Option<DhtDiscovery>>> = Arc::new(TokioMutex::new(None));
+    if enable_dht {
+        let dht_cell = dht_cell.clone();
+        let network_id = network_id.clone();
+        tokio::spawn(async move {
+            let init = timeout(
+                Duration::from_secs(10),
+                tokio::task::spawn_blocking(move || DhtDiscovery::new(&network_id)),
+            )
+            .await;
+            match init {
+                Ok(Ok(Ok(d))) => {
+                    *dht_cell.lock().await = Some(d);
+                }
+                Ok(Ok(Err(e))) => warn!("failed to initialize DHT discovery: {}", e),
+                Ok(Err(e)) => warn!("DHT discovery task panicked: {}", e),
+                Err(_) => warn!("DHT discovery initialization timed out"),
             }
-        }
-    } else {
-        None
-    };
+        });
+    }
 
     let dht_lookup_task = {
-        let dht_discovery = dht_discovery.clone();
+        let dht_cell = dht_cell.clone();
         tokio::spawn(async move {
             let mut out = Vec::new();
-            if let Some(ref d) = dht_discovery {
-                let addrs = d.lookup_peers().await;
-                info!("dht lookup returned {} peer(s)", addrs.len());
-                out = addrs.into_iter().map(|a| a.to_string()).collect();
+            if enable_dht {
+                match wait_for_dht(&dht_cell, Duration::from_secs(15)).await {
+                    Some(d) => {
+                        let addrs = d.lookup_peers().await;
+                        info!("dht lookup returned {} peer(s)", addrs.len());
+                        out = addrs.into_iter().map(|a| a.to_string()).collect();
+                    }
+                    None => warn!("dht discovery not ready in time for initial lookup"),
+                }
             }
             out
         })
@@ -391,8 +425,17 @@ async fn main() {
                 None
             }
         });
+    let require_gossip_auth = std::env::var("GOSSIP_REQUIRE_AUTH")
+        .map(|s| s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let gossip_psk = if require_gossip_auth { psk } else { None };
     if psk.is_some() {
-        info!("gossip authentication enabled via FLUIDIC_PSK");
+        info!("encrypted mempool enabled via FLUIDIC_PSK");
+    }
+    if require_gossip_auth {
+        info!("gossip authentication required via GOSSIP_REQUIRE_AUTH");
+    } else {
+        info!("gossip authentication disabled (public-testnet mode)");
     }
 
     // Build the local peer announcement signed by the operator keypair.
@@ -421,7 +464,7 @@ async fn main() {
         DiscoveryMode::Tcp => {
             let gossip = TcpGossipNode::bind_with_discovery(
                 bind_addr,
-                psk,
+                gossip_psk,
                 local_announcement.clone(),
                 Some(api_state.peer_directory.clone()),
             )
@@ -432,7 +475,7 @@ async fn main() {
         }
         DiscoveryMode::WebSocket => {
             let ws = WsGossipNode::new_with_discovery(
-                psk,
+                gossip_psk,
                 local_announcement.clone(),
                 Some(api_state.peer_directory.clone()),
             )
@@ -458,9 +501,12 @@ async fn main() {
         let dht_port = EndpointScheme::parse(&public_endpoint)
             .and_then(|(_, rest)| rest.rsplit_once(':').and_then(|(_, p)| p.parse().ok()))
             .unwrap_or_else(|| bind_addr.port());
-        if let Some(dht) = dht_discovery.clone() {
+        if enable_dht {
+            let dht_cell = dht_cell.clone();
             tokio::spawn(async move {
-                dht.announce_peer(dht_port).await;
+                if let Some(dht) = wait_for_dht(&dht_cell, Duration::from_secs(15)).await {
+                    dht.announce_peer(dht_port).await;
+                }
             });
         }
         if let Some(ip) = local_announce_ip(bind_addr) {
