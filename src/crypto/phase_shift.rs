@@ -596,6 +596,41 @@ impl IntentFillShift {
 /// 32-byte identifier for a Causal Agent Entanglement contract.
 pub type EntanglementId = [u8; 32];
 
+/// Who is allowed to break (revoke) an entanglement, chosen by the creator
+/// at creation time and hashed into the contract id.
+///
+/// The default historically allowed the subject to break its own
+/// entanglement, which defeated the custody use case: a compromised agent
+/// key could revoke its own guard and then spend freely.  Custody
+/// deployments should use [`BreakPolicy::CreatorOnly`] so the (hot) subject
+/// key can never remove the guard — only the (cold) creator key can.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BreakPolicy {
+    /// Creator, subject, or any listed witness may break.  Suitable only
+    /// for voluntary delegations the subject may exit at will.
+    #[default]
+    AnyParty,
+    /// Only the creator may break.  The subject's own key is NOT
+    /// authorized — this is the agent-custody mode.
+    CreatorOnly,
+    /// The break executes once `threshold` distinct witnesses have each
+    /// submitted a break shift.  Neither the creator nor the subject can
+    /// break unilaterally.
+    WitnessThreshold,
+}
+
+impl BreakPolicy {
+    /// Canonical single-byte encoding used in id/signature hashing.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            BreakPolicy::AnyParty => 0,
+            BreakPolicy::CreatorOnly => 1,
+            BreakPolicy::WitnessThreshold => 2,
+        }
+    }
+}
+
 /// A Causal Agent Entanglement (CAE) contract.
 ///
 /// The `subject` account may only execute stateful spends while this
@@ -603,6 +638,9 @@ pub type EntanglementId = [u8; 32];
 /// submitted an attestation in a prior synthesis tick.  This lets autonomous
 /// agents form trustless, causally-enforced relationships: e.g. "Agent B may
 /// spend WAVE only after Agent A has attested".
+///
+/// Revocation is governed by `break_policy`: the subject is only allowed to
+/// break its own entanglement under [`BreakPolicy::AnyParty`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntanglementContract {
     pub id: EntanglementId,
@@ -612,6 +650,10 @@ pub struct EntanglementContract {
     pub threshold: usize,
     pub expiry_tick: u64,
     pub created_tick: u64,
+    /// Revocation policy chosen at creation.  Defaults to `AnyParty` for
+    /// backwards compatibility with pre-policy snapshots.
+    #[serde(default)]
+    pub break_policy: BreakPolicy,
 }
 
 /// Create a new entanglement contract.
@@ -625,6 +667,8 @@ pub struct EntanglementCreateShift {
     pub expiry_tick: u64,
     pub nonce: u64,
     pub timestamp_ns: u64,
+    #[serde(default)]
+    pub break_policy: BreakPolicy,
     pub signature: Vec<u8>,
 }
 
@@ -637,9 +681,10 @@ impl EntanglementCreateShift {
         expiry_tick: u64,
         nonce: u64,
         timestamp_ns: u64,
+        break_policy: BreakPolicy,
     ) -> Self {
         let creator = creator_keypair.account_id();
-        let id = Self::recompute_id(creator, subject, &witnesses, threshold, expiry_tick, nonce, timestamp_ns);
+        let id = Self::recompute_id(creator, subject, &witnesses, threshold, expiry_tick, nonce, timestamp_ns, break_policy);
 
         let mut shift = Self {
             id,
@@ -650,6 +695,7 @@ impl EntanglementCreateShift {
             expiry_tick,
             nonce,
             timestamp_ns,
+            break_policy,
             signature: Vec::new(),
         };
         let sig = creator_keypair.sign(&shift.signing_bytes());
@@ -667,10 +713,11 @@ impl EntanglementCreateShift {
         expiry_tick: u64,
         nonce: u64,
         timestamp_ns: u64,
+        break_policy: BreakPolicy,
     ) -> EntanglementId {
         let mut id = [0u8; 32];
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"FLUIDIC:ENTANGLEMENT:v1");
+        hasher.update(b"FLUIDIC:ENTANGLEMENT:v2");
         hasher.update(creator.as_bytes());
         hasher.update(subject.as_bytes());
         for w in witnesses {
@@ -680,13 +727,14 @@ impl EntanglementCreateShift {
         hasher.update(&expiry_tick.to_le_bytes());
         hasher.update(&nonce.to_le_bytes());
         hasher.update(&timestamp_ns.to_le_bytes());
+        hasher.update(&[break_policy.as_u8()]);
         id.copy_from_slice(hasher.finalize().as_bytes());
         id
     }
 
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(256);
-        buf.extend_from_slice(b"FLUIDIC:ENTANGLEMENT_CREATE:v1");
+        buf.extend_from_slice(b"FLUIDIC:ENTANGLEMENT_CREATE:v2");
         buf.extend_from_slice(self.creator.as_bytes());
         buf.extend_from_slice(self.subject.as_bytes());
         for w in &self.witnesses {
@@ -696,6 +744,7 @@ impl EntanglementCreateShift {
         buf.extend_from_slice(&self.expiry_tick.to_le_bytes());
         buf.extend_from_slice(&self.nonce.to_le_bytes());
         buf.extend_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf.push(self.break_policy.as_u8());
         buf
     }
 

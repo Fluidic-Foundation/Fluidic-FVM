@@ -2,7 +2,7 @@ use crate::api::state::{ApiState, RecentShift, build_pool_payout_shift};
 use crate::consensus::domain::{DomainPolicy, FeePolicy, StatefulOrdering};
 use crate::consensus::dag::{DagError, RejectionReason, ShiftStatus, VectorClockDag};
 use crate::crypto::{
-    decrypt_signal, encrypt_signal, AccountId, AgentRegistrationShift, CommutativeShift,
+    decrypt_signal, encrypt_signal, AccountId, AgentRegistrationShift, BreakPolicy, CommutativeShift,
     EncryptedSignal, EntanglementAttestShift, EntanglementBreakShift, EntanglementCreateShift,
     IntentConstraint, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation,
     PhysicalResourceType, Signal, StakeShift, StatefulShift,
@@ -818,6 +818,10 @@ struct EntanglementCreateRequest {
     expiry_tick: u64,
     nonce: u64,
     timestamp_ns: u64,
+    /// Revocation policy: "any_party" (default, legacy), "creator_only"
+    /// (agent custody — subject key cannot self-revoke), or
+    /// "witness_threshold" (break needs `threshold` witness approvals).
+    break_policy: Option<BreakPolicy>,
     signature: String,
 }
 
@@ -845,6 +849,7 @@ async fn create_entanglement(
         expiry_tick: req.expiry_tick,
         nonce: req.nonce,
         timestamp_ns: req.timestamp_ns,
+        break_policy: req.break_policy.unwrap_or_default(),
         signature,
     };
 
@@ -865,6 +870,7 @@ async fn create_entanglement(
         shift.expiry_tick,
         shift.nonce,
         shift.timestamp_ns,
+        shift.break_policy,
     );
     if recomputed != id {
         return Err((StatusCode::BAD_REQUEST, "entanglement id does not match recomputed id".to_string()));
@@ -973,9 +979,24 @@ async fn break_entanglement(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("entanglement break ingest failed: {}", e)))?;
     state.broadcast_entanglement_break(shift);
 
+    // Under BreakPolicy::WitnessThreshold the break only executes once enough
+    // witness approvals accumulate; report whether it has executed yet.
+    let still_active = state
+        .oscillator
+        .entanglements
+        .read()
+        .unwrap()
+        .contains_key(&entanglement_id);
+    let (status, approvals) = if still_active {
+        ("pending", state.oscillator.pending_break_count(&entanglement_id))
+    } else {
+        ("broken", 0)
+    };
+
     Ok(Json(serde_json::json!({
-        "status": "broken",
+        "status": status,
         "entanglement_id": hex::encode(entanglement_id),
+        "break_approvals": approvals,
     })))
 }
 
@@ -1010,6 +1031,8 @@ async fn get_entanglement(
         "threshold": contract.threshold,
         "expiry_tick": contract.expiry_tick,
         "created_tick": contract.created_tick,
+        "break_policy": contract.break_policy,
+        "break_approvals": state.oscillator.pending_break_count(&eid),
         "active": current_tick <= contract.expiry_tick,
         "attestations_this_tick": attestation_count,
     })))
@@ -1051,6 +1074,8 @@ async fn get_account_entanglements(
                 "threshold": c.threshold,
                 "expiry_tick": c.expiry_tick,
                 "created_tick": c.created_tick,
+                "break_policy": c.break_policy,
+                "break_approvals": state.oscillator.pending_break_count(&c.id),
                 "active": current_tick <= c.expiry_tick,
                 "attestations_this_tick": attestation_count,
             })

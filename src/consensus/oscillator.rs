@@ -5,7 +5,7 @@ use crate::consensus::certificate::{
 use crate::consensus::dag::{DagError, RejectionProof, RejectionReason, ShiftStatus, VectorClockDag};
 use crate::consensus::domain::{DomainRegistry, StatefulOrdering};
 use crate::crypto::{
-    AccountId, AgentRegistrationShift, CommutativeShift, DomainId, EntanglementAttestShift,
+    AccountId, AgentRegistrationShift, BreakPolicy, CommutativeShift, DomainId, EntanglementAttestShift,
     EntanglementBreakShift, EntanglementContract, EntanglementCreateShift, EntanglementId,
     IntentConstraint, IntentFillShift, IntentShift, KeyPair, PhysicalAttestation, PoolId,
     RegistrationShift, Signal, StakeShift, StatefulShift, TxHash, VectorClock, DEFAULT_DEX_DOMAIN,
@@ -91,6 +91,10 @@ pub struct Oscillator {
     /// Per-entanglement witness attestations.  Cleared each tick so attestations
     /// are fresh; witnesses must re-attest every tick the subject wants to spend.
     pub entanglement_attestations: Arc<RwLock<HashMap<EntanglementId, std::collections::HashSet<AccountId>>>>,
+    /// Witness break approvals accumulated for entanglements created with
+    /// `BreakPolicy::WitnessThreshold`.  The entanglement is removed once the
+    /// number of distinct witness breakers reaches the contract threshold.
+    pub pending_breaks: Arc<RwLock<HashMap<EntanglementId, std::collections::HashSet<AccountId>>>>,
     /// Optional operator keypair used to sign synthesis certificates.
     pub operator_keypair: Option<KeyPair>,
     /// Signed synthesis certificates indexed by tick.
@@ -184,6 +188,7 @@ impl Oscillator {
             operator_keypair: None,
             entanglements: Arc::new(RwLock::new(HashMap::new())),
             entanglement_attestations: Arc::new(RwLock::new(HashMap::new())),
+            pending_breaks: Arc::new(RwLock::new(HashMap::new())),
             certificates: Arc::new(RwLock::new(HashMap::new())),
             stake_table: Arc::new(StakeTable::new(StakingConfig::default())),
             certificate_tracker: Arc::new(CertificateTracker::new()),
@@ -587,6 +592,7 @@ impl Oscillator {
             shift.expiry_tick,
             shift.nonce,
             shift.timestamp_ns,
+            shift.break_policy,
         );
         if recomputed != shift.id {
             tracing::warn!("entanglement create rejected: provided id does not match recomputed id");
@@ -601,6 +607,7 @@ impl Oscillator {
             threshold: shift.threshold,
             expiry_tick: shift.expiry_tick,
             created_tick: tick,
+            break_policy: shift.break_policy,
         };
 
         let mut entanglements = self.entanglements.write().unwrap();
@@ -608,6 +615,9 @@ impl Oscillator {
             return true; // already known
         }
         entanglements.insert(shift.id, contract);
+        drop(entanglements);
+        // A fresh contract id must not inherit stale break approvals.
+        self.pending_breaks.write().unwrap().remove(&shift.id);
         true
     }
 
@@ -670,8 +680,17 @@ impl Oscillator {
         true
     }
 
-    /// Break / revoke an entanglement.  The breaker must be the creator, the
-    /// subject, or one of the listed witnesses.
+    /// Break / revoke an entanglement, enforcing the contract's `BreakPolicy`.
+    ///
+    /// - `AnyParty`: creator, subject, or any listed witness may break.
+    /// - `CreatorOnly`: only the creator may break — the subject's own key is
+    ///   rejected, so a compromised agent key cannot revoke its own guard.
+    /// - `WitnessThreshold`: each witness break shift records an approval; the
+    ///   entanglement is removed once `threshold` distinct witnesses approve.
+    ///   Creator and subject cannot break unilaterally.
+    ///
+    /// Returns true if the shift was accepted (the entanglement may still be
+    /// pending further witness approvals under `WitnessThreshold`).
     pub fn apply_entanglement_break(
         &self,
         shift: &EntanglementBreakShift,
@@ -692,24 +711,68 @@ impl Oscillator {
 
         let entanglements = self.entanglements.read().unwrap();
         let Some(contract) = entanglements.get(&shift.entanglement_id) else {
-            return true; // already gone
+            // Already gone; make sure no stale approvals linger.
+            drop(entanglements);
+            self.pending_breaks.write().unwrap().remove(&shift.entanglement_id);
+            return true;
         };
-        let authorized = shift.breaker == contract.creator
-            || shift.breaker == contract.subject
-            || contract.witnesses.contains(&shift.breaker);
+        let authorized = match contract.break_policy {
+            BreakPolicy::AnyParty => {
+                shift.breaker == contract.creator
+                    || shift.breaker == contract.subject
+                    || contract.witnesses.contains(&shift.breaker)
+            }
+            BreakPolicy::CreatorOnly => shift.breaker == contract.creator,
+            BreakPolicy::WitnessThreshold => contract.witnesses.contains(&shift.breaker),
+        };
         if !authorized {
             tracing::warn!(
-                "entanglement break rejected: {} is not authorized to break contract {}",
+                "entanglement break rejected: {} is not authorized to break contract {} (policy {:?})",
                 shift.breaker,
-                hex::encode(shift.entanglement_id)
+                hex::encode(shift.entanglement_id),
+                contract.break_policy,
             );
             return false;
         }
-        drop(entanglements);
+
+        if contract.break_policy == BreakPolicy::WitnessThreshold {
+            let threshold = contract.threshold;
+            drop(entanglements);
+            let mut pending = self.pending_breaks.write().unwrap();
+            let approvals = pending
+                .entry(shift.entanglement_id)
+                .or_insert_with(HashSet::new);
+            approvals.insert(shift.breaker);
+            if approvals.len() < threshold {
+                tracing::info!(
+                    "entanglement {} break approval {}/{} recorded",
+                    hex::encode(shift.entanglement_id),
+                    approvals.len(),
+                    threshold,
+                );
+                return true; // pending further witness approvals
+            }
+            drop(pending);
+        } else {
+            drop(entanglements);
+        }
 
         let mut entanglements = self.entanglements.write().unwrap();
         entanglements.remove(&shift.entanglement_id);
+        drop(entanglements);
+        self.pending_breaks.write().unwrap().remove(&shift.entanglement_id);
         true
+    }
+
+    /// Number of distinct witness break approvals recorded so far for an
+    /// entanglement (only meaningful under `BreakPolicy::WitnessThreshold`).
+    pub fn pending_break_count(&self, id: &EntanglementId) -> usize {
+        self.pending_breaks
+            .read()
+            .unwrap()
+            .get(id)
+            .map(|s| s.len())
+            .unwrap_or(0)
     }
 
     /// Return true if `account` is not currently bound by an unmet entanglement
@@ -2007,6 +2070,7 @@ mod tests {
             1_000_000,
             0,
             0,
+            BreakPolicy::AnyParty,
         );
         assert!(osc.apply_entanglement_create(&create, &registry));
 
@@ -2056,5 +2120,121 @@ mod tests {
 
         let result2 = osc.synthesize(&registry);
         assert_eq!(result2.stateful_applied, 1);
+    }
+
+    #[test]
+    fn entanglement_break_creator_only_rejects_subject_and_witness() {
+        let osc = Oscillator::new([1u8; 32], 64);
+        let creator = KeyPair::generate();
+        let subject = KeyPair::generate();
+        let witness = KeyPair::generate();
+
+        let mut registry = HashMap::new();
+        registry.insert(creator.account_id(), creator.public_key());
+        registry.insert(subject.account_id(), subject.public_key());
+        registry.insert(witness.account_id(), witness.public_key());
+
+        let create = EntanglementCreateShift::new(
+            &creator,
+            subject.account_id(),
+            vec![witness.account_id()],
+            1,
+            1_000_000,
+            0,
+            0,
+            BreakPolicy::CreatorOnly,
+        );
+        assert!(osc.apply_entanglement_create(&create, &registry));
+
+        // The subject (e.g. a compromised agent key) cannot revoke its own guard.
+        let subject_break = EntanglementBreakShift::new(&subject, create.id, 0, 0);
+        assert!(!osc.apply_entanglement_break(&subject_break, &registry));
+        assert!(osc.entanglements.read().unwrap().contains_key(&create.id));
+
+        // A witness cannot break it either.
+        let witness_break = EntanglementBreakShift::new(&witness, create.id, 0, 0);
+        assert!(!osc.apply_entanglement_break(&witness_break, &registry));
+        assert!(osc.entanglements.read().unwrap().contains_key(&create.id));
+
+        // Only the creator can.
+        let creator_break = EntanglementBreakShift::new(&creator, create.id, 1, 0);
+        assert!(osc.apply_entanglement_break(&creator_break, &registry));
+        assert!(!osc.entanglements.read().unwrap().contains_key(&create.id));
+    }
+
+    #[test]
+    fn entanglement_break_witness_threshold_accumulates() {
+        let osc = Oscillator::new([1u8; 32], 64);
+        let creator = KeyPair::generate();
+        let subject = KeyPair::generate();
+        let w1 = KeyPair::generate();
+        let w2 = KeyPair::generate();
+
+        let mut registry = HashMap::new();
+        registry.insert(creator.account_id(), creator.public_key());
+        registry.insert(subject.account_id(), subject.public_key());
+        registry.insert(w1.account_id(), w1.public_key());
+        registry.insert(w2.account_id(), w2.public_key());
+
+        let create = EntanglementCreateShift::new(
+            &creator,
+            subject.account_id(),
+            vec![w1.account_id(), w2.account_id()],
+            2,
+            1_000_000,
+            0,
+            0,
+            BreakPolicy::WitnessThreshold,
+        );
+        assert!(osc.apply_entanglement_create(&create, &registry));
+
+        // Neither creator nor subject can break unilaterally.
+        let creator_break = EntanglementBreakShift::new(&creator, create.id, 1, 0);
+        assert!(!osc.apply_entanglement_break(&creator_break, &registry));
+        let subject_break = EntanglementBreakShift::new(&subject, create.id, 0, 0);
+        assert!(!osc.apply_entanglement_break(&subject_break, &registry));
+        assert!(osc.entanglements.read().unwrap().contains_key(&create.id));
+
+        // First witness approval is accepted but the break stays pending.
+        let b1 = EntanglementBreakShift::new(&w1, create.id, 0, 0);
+        assert!(osc.apply_entanglement_break(&b1, &registry));
+        assert!(osc.entanglements.read().unwrap().contains_key(&create.id));
+        assert_eq!(osc.pending_break_count(&create.id), 1);
+
+        // Second witness approval reaches the threshold and executes the break.
+        let b2 = EntanglementBreakShift::new(&w2, create.id, 0, 0);
+        assert!(osc.apply_entanglement_break(&b2, &registry));
+        assert!(!osc.entanglements.read().unwrap().contains_key(&create.id));
+        assert_eq!(osc.pending_break_count(&create.id), 0);
+    }
+
+    #[test]
+    fn entanglement_break_any_party_keeps_legacy_behavior() {
+        let osc = Oscillator::new([1u8; 32], 64);
+        let creator = KeyPair::generate();
+        let subject = KeyPair::generate();
+        let witness = KeyPair::generate();
+
+        let mut registry = HashMap::new();
+        registry.insert(creator.account_id(), creator.public_key());
+        registry.insert(subject.account_id(), subject.public_key());
+        registry.insert(witness.account_id(), witness.public_key());
+
+        let create = EntanglementCreateShift::new(
+            &creator,
+            subject.account_id(),
+            vec![witness.account_id()],
+            1,
+            1_000_000,
+            0,
+            0,
+            BreakPolicy::AnyParty,
+        );
+        assert!(osc.apply_entanglement_create(&create, &registry));
+
+        // Subject self-revocation remains possible only under AnyParty.
+        let subject_break = EntanglementBreakShift::new(&subject, create.id, 0, 0);
+        assert!(osc.apply_entanglement_break(&subject_break, &registry));
+        assert!(!osc.entanglements.read().unwrap().contains_key(&create.id));
     }
 }

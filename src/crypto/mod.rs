@@ -5,7 +5,7 @@ pub mod phase_shift;
 pub use encrypted::{EncryptedSignal, decrypt_signal, encrypt_signal};
 pub use keys::{AccountId, KeyPair, WaveAddress};
 pub use phase_shift::{
-    AgentRegistrationShift, CommutativeShift, DomainId, EntanglementAttestShift,
+    AgentRegistrationShift, BreakPolicy, CommutativeShift, DomainId, EntanglementAttestShift,
     EntanglementBreakShift, EntanglementContract, EntanglementCreateShift, EntanglementId,
     IntentConstraint, IntentFillShift, IntentShift, OscillatorId, PhysicalAttestation,
     PhysicalResourceType, PoolId, RegistrationShift, Signal, StakeShift, StatefulShift, TxHash,
